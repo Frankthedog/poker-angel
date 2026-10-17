@@ -806,6 +806,109 @@ const Trainer = (() => {
       })
       .replace(/(?<![(\w])ICM(?![\w)])/, 'ICM (the Independent Chip Model: what your chips are worth in prize money)');
   }
+  // ---- detailed explanations: the numbers behind a decision, as tables ----
+  // Optional ("📊 Show the numbers"). Worked out at the moment of the decision and kept with it, so a
+  // replay shows the same tables. Plain data (title / head / rows), drawn by detailHtml.
+  function tierName(hole, board) {
+    const t = tierOn(hole, board);
+    if (t === 3) return 'strong';
+    if (t === 2) return 'top';
+    if (t === 1) return (hole[0].r === hole[1].r || hole.some(h => board.some(b => b.r === h.r))) ? 'weak' : 'draw';
+    return 'air';
+  }
+  const pctTxt = v => r1(v * 100) + '%';
+  function topFreq(w) { const P = pct(), f = new Float64Array(169); PK_HAND_ORDER.forEach((c, j) => { f[j] = P[c] <= w + 1e-9 ? 1 : 0; }); return f; }
+  function preDetail(s) {
+    const h = PushFold.ix(s.k), rank = PK_HAND_ORDER.indexOf(s.k) + 1, eqVs = w => pctTxt(PushFold.eqVsRange(h, topFreq(w)));
+    const out = [{ title: 'Your hand', head: ['', ''], rows: [['Hand', handWords(s.k) + ' (' + s.k + ')'], ['Rank among the 169 starting hands', '#' + rank + ' of 169'], ['Share of hands as good or better', pctTxt(pct()[s.k])]] }];
+    const eqRows = [['Any two cards', eqVs(1)], ['The best 25% of hands', eqVs(0.25)], ['The best 10% of hands', eqVs(0.1)]];
+    if (s.raises >= 1 && s.openerPos) { const o = s.opps.find(x => x.pos === s.openerPos); if (o && o.width < 1) eqRows.push(['The ' + s.openerPos + ' raiser’s likely hands (best ' + pctTxt(o.width) + ')', eqVs(o.width)]); }
+    out.push({ title: 'Your chance of winning if all five cards are dealt, against…', head: ['Opponent holds', 'You win'], rows: eqRows });
+    if (s.raises === 0 && s.pos !== 'BB') {
+      out.push({ title: 'How much each seat raises when everyone folds to it', head: ['Seat', 'Raises with', 'Your hand?'],
+        rows: ['UTG', 'HJ', 'CO', 'BTN', 'SB'].map(p => [p + (p === s.pos ? ' (you)' : ''), 'the best ' + pctTxt(chartWidth('rfi.' + p)), chart('rfi.' + p).has(s.k) ? 'raise' : 'fold']) });
+    } else if (s.raises === 1) {
+      const grp = /^(CO|BTN|SB)$/.test(s.openerPos) ? 'Late' : 'Early', who = s.pos === 'BB' ? 'bb' : s.pos === 'SB' ? 'sb' : 'ip';
+      const w3 = chartWidth(who + '3' + grp), wc = who === 'sb' ? 0 : chartWidth(who + 'Call' + grp);
+      out.push({ title: 'Against this raise, from your seat, good players…', head: ['Action', 'Share of hands', 'Your hand?'],
+        rows: [['Re-raise (3-bet)', pctTxt(w3), chart(who + '3' + grp).has(s.k) ? 'yes' : ''], ['Call', who === 'sb' ? '0% — re-raise or fold' : pctTxt(wc), who !== 'sb' && chart(who + 'Call' + grp).has(s.k) ? 'yes' : ''], ['Fold', pctTxt(1 - w3 - wc), !chart(who + '3' + grp).has(s.k) && !(who !== 'sb' && chart(who + 'Call' + grp).has(s.k)) ? 'yes' : '']] });
+    }
+    return out;
+  }
+  function postDetail(s, E) {
+    const out = [], e = E / 100, rng = Math.random;
+    if (s.toCall > 0) {
+      const need = s.toCall / (s.pot + s.toCall), ev = e * (s.pot + s.toCall) - s.toCall;
+      out.push({ title: 'The price of calling', head: ['', ''], rows: [['Pot before you act', bbs(r2(s.pot))], ['To call', bbs(r2(s.toCall))], ['Pot if you call', bbs(r2(s.pot + s.toCall))],
+        ['Chance you need (to call ÷ pot if you call)', pctTxt(need)], ['Your chance of winning', E + '%'], ['Calling, on average', (ev >= 0 ? '+' : '') + bbs(r2(ev)) + ' each time'], ['Folding', 'nothing more lost']] });
+    }
+    // what each opponent probably holds, judged from how they've played
+    const base = new Uint8Array(52); s.cards.concat(s.board).forEach(c => { base[cid(c)] = 1; });
+    const mine = evalHand(s.cards.concat(s.board)), N = 600, rows = [];
+    for (const o of s.opps) {
+      const mix = { strong: 0, top: 0, weak: 0, draw: 0, air: 0 }; let ahead = 0;
+      for (let t = 0; t < N; t++) {
+        const c = sampleHand(o, s.board, base.slice(), rng); if (!c) continue;
+        mix[tierName([c.x, c.y], s.board)]++;
+        const theirs = evalHand([c.x, c.y].concat(s.board)); if (mine > theirs) ahead++; else if (mine === theirs) ahead += 0.5;
+      }
+      const eqv = equityVsRanges(s.cards, s.board, [o], 1200);
+      rows.push([(o.name || 'Player') + ' (' + o.pos + ')', pctTxt(mix.strong / N), pctTxt(mix.top / N), pctTxt(mix.weak / N), pctTxt(mix.draw / N), pctTxt(mix.air / N), pctTxt(ahead / N), eqv + '%']);
+    }
+    out.push({ title: 'What they probably hold (from how they’ve played this hand)', head: ['Player', 'Two pair or better', 'Top pair / overpair', 'Weaker pair', 'A draw', 'Nothing', 'You’re ahead right now', 'Your chance vs them'], rows,
+      note: 'Their likely hands are estimated from their seat and their bets, checks and calls — the same reads the grades use.' });
+    // outs: cards still to come that improve your hand (not cards that only improve the board)
+    if (s.street < 3) {
+      const CATS = ['high card', 'one pair', 'two pair', 'three of a kind', 'a straight', 'a flush', 'a full house', 'four of a kind', 'a straight flush'];
+      const cat = cs => Math.floor(evalHand(cs) / CAT), cur = cat(s.cards.concat(s.board)), by = {};
+      let total = 0, unseen = 0;
+      for (let id = 0; id < 52; id++) {
+        if (base[id]) continue; unseen++;
+        const c = fromId(id), nc = cat(s.cards.concat(s.board, [c])), bc = cat(s.board.concat([c]));
+        if (nc > cur && nc > bc && nc >= 2) { by[CATS[nc]] = (by[CATS[nc]] || 0) + 1; total++; }
+      }
+      const orows = Object.keys(by).sort((a, b) => CATS.indexOf(b) - CATS.indexOf(a)).map(k => ['Makes ' + k, by[k] + ' card' + (by[k] === 1 ? '' : 's')]);
+      orows.push(['All your outs', total + ' of the ' + unseen + ' unseen cards']);
+      orows.push(['Chance on the next card', pctTxt(total / unseen)]);
+      if (s.street === 1) orows.push(['Chance by the river (two cards)', pctTxt(1 - (unseen - total) * (unseen - total - 1) / (unseen * (unseen - 1)))]);
+      out.push({ title: 'Your outs — cards to come that improve you', head: ['', ''], rows: orows,
+        note: 'An out improves your hand; it doesn’t guarantee the win. Rule of thumb: outs × 2 = % for one card, outs × 4 = % for two.' });
+    }
+    return out;
+  }
+  function shortDetail(G, i, sp) {
+    const p = G.players[i], k = cls(p.cards[0], p.cards[1]), name = s2 => (G.players[s2].name || 'Seat') + ' (' + posOf(G, s2) + ', ' + r1(G.players[s2].stack + G.players[s2].bet) + 'bb)';
+    if (sp.type === 'shove') {
+      const tb = pfTable(G, i, sp.order), r = PushFold.shoveSpot(tb.t, k), out = [];
+      out.push({ title: 'If you go all-in, each player behind you…', head: ['Player', 'Calls with', 'Needs to call (prize money)', 'Needs to call (chips only)'],
+        rows: r.callers.map(c => [name(tb.seats[c.seat]), pctTxt(c.callPct) + ' of hands', pctTxt(c.needIcm), pctTxt(c.needChips)]) });
+      const rows = [['You fold', usd(r.fold$)], ['All-in, everyone folds (' + pctTxt(r.foldEquity) + ' of the time)', usd(r.steal$)]];
+      r.callers.forEach(c => { const nm = G.players[tb.seats[c.seat]].name; rows.push(['All-in, ' + nm + ' calls, you win', usd(c.win$)], ['All-in, ' + nm + ' calls, you lose', usd(c.lose$)]); });
+      rows.push(['Going all-in, on average', usd(r.shove$)]);
+      out.push({ title: 'What each outcome is worth to you in prize money', head: ['Outcome', 'Prize money'], rows, note: 'Prize money = your share of the prizes from your chips (ICM).' });
+      return out;
+    }
+    const tb = pfTable(G, i, []), r = PushFold.callSpot(tb.t, k, tb.seats.indexOf(sp.pusher), Math.max(1, sp.mp));
+    return [{ title: 'Calling the all-in', head: ['', ''], rows: [['Their likely hands', 'the best ' + pctTxt(r.pusherRangePct)], ['Your chance of winning', pctTxt(r.eq)], ['Chance you need (chips only)', pctTxt(r.needChips)], ['Chance you need (prize money)', pctTxt(r.needIcm)]] },
+      { title: 'What each outcome is worth to you in prize money', head: ['Outcome', 'Prize money'], rows: [['You fold', usd(r.fold$)], ['You call and win', usd(r.win$)], ['You call and lose', usd(r.lose$)], ['Calling, on average', usd(r.call$)]], note: 'Prize money = your share of the prizes from your chips (ICM).' }];
+  }
+  function detailFor(G, i, E) {
+    try {
+      const s = spot(G, i), sp = !s.street && G.tour && shortSpot(G, i);
+      if (sp) return shortDetail(G, i, sp);
+      if (!s.street) return preDetail(s);
+      return postDetail(s, E == null ? equityVsRanges(s.cards, s.board, s.opps, 2500) : E);
+    } catch (e) { console.error('detail', e); return null; }
+  }
+  function detailHtml(tables, toggle) {
+    const btn = toggle ? '<button class="ghost tr-mini" data-act="ui:detail">' + (opts.detail ? 'Hide the numbers' : '📊 Show the numbers') + '</button>' : '';
+    if (!opts.detail || !tables || !tables.length) return btn ? '<div class="tr-row">' + btn + '</div>' : '';
+    return '<div class="tr-detail">' + tables.map(t => '<div class="tr-stattab"><b>' + esc(plain(t.title)) + '</b><div class="tr-tscroll"><table>'
+      + (t.head && t.head.some(Boolean) ? '<tr>' + t.head.map(x => '<th>' + esc(plain(x)) + '</th>').join('') + '</tr>' : '')
+      + t.rows.map(r => '<tr>' + r.map(x => '<td>' + esc(plain(String(x))) + '</td>').join('') + '</tr>').join('') + '</table></div>'
+      + (t.note ? '<small>' + esc(plain(t.note)) + '</small>' : '') + '</div>').join('') + (btn ? '<div class="tr-row">' + btn + '</div>' : '') + '</div>';
+  }
+
   // Explanation text → HTML: escaped, with each line's label ("So:", "The price:") in bold.
   function fmtWhy(text) {
     return esc(plain(text)).split('\n').map(l => l.replace(/^([A-Z][A-Za-z’' ]{1,28}):/, '<b class="tr-lbl">$1:</b>')).join('\n');
@@ -980,7 +1083,7 @@ const Trainer = (() => {
     const G = short || withSizing(s.street ? gradePost(s, kind, E) : gradePre(s, kind), s, kind, Math.max(L.minTo, Math.min(L.maxTo, half(Number(to) || 0))), E);
     const live = g.players.filter((q, j) => j !== i && !q.folded);
     const Eact = (room || opts.showBots) && live.length ? equityVsRanges(s.cards, s.board, live.map(q => ({ fixed: q.cards })), 2000) : null;
-    decisions.push({ id: handKey() + '.' + decisions.length, at: (g.acts || []).length, seat: i, name: g.players[i].name, street: s.street, kind, verb: verbOf(kind, s), G, E, Eact });
+    decisions.push({ id: handKey() + '.' + decisions.length, at: (g.acts || []).length, seat: i, name: g.players[i].name, street: s.street, kind, verb: verbOf(kind, s), G, E, Eact, detail: detailFor(g, i, E) });
     act(g, i, { type: kind, to });
   }
   // Runs on the host (or solo) for every person's action.
@@ -1045,12 +1148,13 @@ const Trainer = (() => {
     if (L.canRaise) for (const z of sizes()) list.push({ kind: 'raise', label: z.label, to: z.to, note: sp ? (z.to >= L.maxTo - 0.01 ? 'All-in: the push/fold play at this stack.' : 'A smaller raise — at this stack, all-in or fold is better.') : sizeVerdict(s, z.to, adv) });
     for (const o of list) o.best = o.kind === best && (o.kind !== 'raise' || sp ? (o.kind !== 'raise' || o.to >= L.maxTo - 0.01) : /recommended/.test(o.note));
     if (best === 'raise' && !list.some(o => o.best)) { const r = list.filter(o => o.kind === 'raise'); if (r.length) r[0].best = true; }
-    _advice = { key, best: best === 'raise' ? (sp ? 'all-in' : verbOf('raise', s) + (adv ? ' (' + adv.rec + ')' : '')) : best, why: why + (adv && best === 'raise' ? '\nBet size: ' + adv.rec + '. ' + adv.why : ''), list };
+    const detail = detailFor(g, me, E);
+    _advice = { key, detail, best: best === 'raise' ? (sp ? 'all-in' : verbOf('raise', s) + (adv ? ' (' + adv.rec + ')' : '')) : best, why: why + (adv && best === 'raise' ? '\nBet size: ' + adv.rec + '. ' + adv.why : ''), list };
     return _advice;
   }
   function adviceHtml() {
     const a = adviceNow(); if (!a) return '';
-    return '<div class="tr-advice"><b>' + esc(plain('Before you act · Best play: ' + a.best)) + '</b><div class="tr-why">' + fmtWhy(a.why) + '</div>'
+    return '<div class="tr-advice"><b>' + esc(plain('Before you act · Best play: ' + a.best)) + '</b><div class="tr-why">' + fmtWhy(a.why) + '</div>' + detailHtml(a.detail, true)
       + '<div class="tr-optlist"><span class="tr-dim">Your options:</span>' + a.list.map(o => '<div class="tr-opt' + (o.best ? ' best' : '') + '"><b>' + esc(plain(o.label)) + '</b>' + (o.best ? '<span class="tr-tag">Recommended</span>' : '') + '<span>' + esc(plain(o.note)) + '</span></div>').join('') + '</div></div>';
   }
   function hint() {
@@ -1076,9 +1180,9 @@ const Trainer = (() => {
     if (!room || room.faceUp || (g && g.over)) return decisions;
     return decisions.filter(d => d.seat === seat).map(d => Object.assign({}, d, { Eact: null }));
   }
-  function decHtml(d) {
+  function decHtml(d, toggle) {
     const who = d.seat === me ? 'You' : d.name;
-    return '<b>' + esc(plain(who + ' chose: ' + (d.verb || d.kind) + ' · ' + d.G.head)) + '</b><div class="tr-why">' + fmtWhy(d.G.why)
+    return '<b>' + esc(plain(who + ' chose: ' + (d.verb || d.kind) + ' · ' + d.G.head)) + '</b><div class="tr-why">' + fmtWhy(d.G.why) + '</div>' + detailHtml(d.detail, toggle) + '<div class="tr-why">'
       + (d.Eact != null ? '\nAgainst the cards actually held: ' + d.Eact + '%.' : '')
       + (d.G.loss > 0 && d.kind !== d.G.head.replace(/^Best play: (\w+).*/, '$1') ? '\nWhat this choice costs: about ' + bbs(d.G.loss) + ' each time, on average.' : '')
       + (d.G.usd > 0 ? '\nWhat this choice costs: about ' + usd(d.G.usd) + ' in prize money, on average.' : '')
@@ -1121,7 +1225,7 @@ const Trainer = (() => {
       seats: g.players.map(q => ({ n: q.name, s: q.style || null, l: q.level || null })),
       start: g.start, seed: g.seed, acts: (g.acts || []).slice(),
       cards: cardsTxt(p.cards), k: cls(p.cards[0], p.cards[1]), pos: posOf(g, me), net: r2(p.stack - (g.startStacks ? g.startStacks[me] : 100)),
-      dec: decisions.map(d => ({ seat: d.seat, name: d.name, street: d.street, kind: d.kind, verb: d.verb, at: d.at, Eact: d.Eact, G: { v: d.G.v, head: d.G.head, why: d.G.why, loss: d.G.loss, usd: d.G.usd } })) };
+      dec: decisions.map(d => ({ seat: d.seat, name: d.name, street: d.street, kind: d.kind, verb: d.verb, at: d.at, Eact: d.Eact, detail: d.detail || null, G: { v: d.G.v, head: d.G.head, why: d.G.why, loss: d.G.loss, usd: d.G.usd } })) };
     history = [rec].concat(history.filter(h => h.id !== rec.id)).slice(0, 30);
     try { ls(HIST_KEY, JSON.stringify(history)); } catch (e) {}
   }
@@ -1158,7 +1262,7 @@ const Trainer = (() => {
     const what = last ? who(last.i) + ' (' + last.pos + ') ' + last.txt : 'The deal: blinds posted, cards dealt.';
     const end = rg.over && R.step >= total ? '\n' + rg.result.wins.map(w => who(w.i) + ' win' + (w.i === rec.me ? '' : 's') + ' ' + bbs(r2(w.amt)) + (w.name ? ' — ' + w.name : '')).join('\n') : '';
     setPanel('<div class="tr-explain tr-narrate"><b>' + esc(plain(what)) + '</b>' + (end ? '<div class="tr-why">' + esc(plain(end)) + '</div>' : '')
-      + (d ? '<div class="tr-why"><b class="tr-lbl">' + esc(plain(who(d.seat) + ' chose: ' + (d.verb || d.kind) + ' · ' + d.G.head)) + '</b>\n' + fmtWhy(d.G.why) + '</div>' : '') + '</div>');
+      + (d ? '<div class="tr-why"><b class="tr-lbl">' + esc(plain(who(d.seat) + ' chose: ' + (d.verb || d.kind) + ' · ' + d.G.head)) + '</b>\n' + fmtWhy(d.G.why) + '</div>' + detailHtml(d.detail, true) : '') + '</div>');
     m.innerHTML = '<div class="tr-replay-head"><button class="ghost" data-act="hist:close">← All hands</button><b>Replay · hand #' + rec.handNo + '</b><span class="tr-dim">Step ' + R.step + ' of ' + total + ' · every card is shown</span></div>'
       + '<div class="tr-felt-wrap"><div class="tr-felt">' + felt + '</div></div>'
       + '<div class="tr-actions"><button class="ghost" data-act="hist:first"' + (R.step ? '' : ' disabled') + '>⏮ Start</button><button class="ghost" data-act="hist:prev"' + (R.step ? '' : ' disabled') + '>◀ Back</button>'
@@ -1621,7 +1725,7 @@ const Trainer = (() => {
     let actions;
     const extras = (HAS_AI ? '<button class="ghost" data-act="play:ai">🤖 Ask the AI coach about this hand</button>' : '') + '<button class="ghost" data-act="play:copy">📋 Copy hand history</button>';
     const pend = pauseOn() ? myPending() : null;
-    const panel = pend ? '<div class="tr-explain">' + decHtml(pend)
+    const panel = pend ? '<div class="tr-explain">' + decHtml(pend, true)
       + (g.over ? '' : '<div class="tr-row">' + (holding() ? '<button class="primary" data-act="play:continue">Continue ▶</button><span class="tr-dim">The bots wait until you press Continue.</span>' : '<button class="ghost" data-act="play:continue">Got it</button>') + '</div>') + '</div>' : '';
     if (g.over && T && T.done) {
       actions = (isGuest() ? '<span class="tr-wait">Waiting for the host to start the next game…</span>' : '<button class="primary" data-act="tour:again">🏆 New tournament</button><button class="ghost" data-act="tour:menu">Back to the menu</button>') + extras;
@@ -1644,6 +1748,7 @@ const Trainer = (() => {
       actions = b.join('');
     }
     const optsRow = '<label><input type="checkbox" data-opt="advise"' + (opts.advise ? ' checked' : '') + ' /> Advise me before I act</label>'
+      + '<label><input type="checkbox" data-opt="detail"' + (opts.detail ? ' checked' : '') + ' /> 📊 Detailed explanations (stat tables)</label>'
       + '<label><input type="checkbox" data-opt="pause"' + (pauseOn() ? ' checked' : '') + ' /> Explain after I act' + (room ? '' : ' (and pause)') + '</label>'
       + (room ? '' : '<label><input type="checkbox" data-opt="showBots"' + (opts.showBots ? ' checked' : '') + ' /> Show the bots’ cards</label>')
       + (room || T ? '' : '<label title="Like PokerStars Zoom: when you fold, the rest of the hand plays out at once and you’re dealt the next one — many more hands per hour."><input type="checkbox" data-opt="fastFold"' + (opts.fastFold ? ' checked' : '') + ' /> ⚡ Fast-fold</label>');
@@ -2277,7 +2382,7 @@ const Trainer = (() => {
     const st = X.sc.steps[X.i], L = legal(X.g, 0);
     const to = kind === 'raise' ? (st.play[0] === 'raise' ? st.play[1] : (sizes()[0] || {}).to) : 0;
     const saved = { g, me }; g = X.g; me = 0;
-    let res; try { res = gradeChoice(X.g, 0, kind, kind === 'allin' ? L.maxTo : to); } finally { g = saved.g; me = saved.me; }
+    let res; try { res = gradeChoice(X.g, 0, kind === 'allin' ? 'raise' : kind, kind === 'allin' ? L.maxTo : to); res.detail = detailFor(X.g, 0); } finally { g = saved.g; me = saved.me; }
     X.feedback = res;
     act(X.g, 0, { type: st.play[0], to: st.play[1] });         // the hand carries on with the best play
     X.waiting = false; X.i++;
@@ -2303,7 +2408,7 @@ const Trainer = (() => {
       }
     } finally { g = saved.g; me = saved.me; room = saved.room; opts.showBots = saved.show; }
     const last = X.notes.slice(-1)[0] || '', earlier = X.notes.slice(0, -1);
-    const fb = X.feedback ? '<div class="tr-explain"><b>' + esc(plain('You chose: ' + X.feedback.verb + ' · ' + X.feedback.G.head)) + '</b><div class="tr-why">' + fmtWhy(X.feedback.G.why) + '</div></div>' : '';
+    const fb = X.feedback ? '<div class="tr-explain"><b>' + esc(plain('You chose: ' + X.feedback.verb + ' · ' + X.feedback.G.head)) + '</b><div class="tr-why">' + fmtWhy(X.feedback.G.why) + '</div>' + detailHtml(X.feedback.detail, true) + '</div>' : '';
     const end = X.done ? (X.g.over && X.g.result ? '<div class="tr-dim">' + esc(plain(X.g.result.wins.map(w => (w.i === 0 ? 'You win ' : X.g.players[w.i].name + ' wins ') + bbs(r2(w.amt)) + (w.name ? ' with ' + w.name : '')).join(' · '))) + '</div>' : '')
       + '<div class="tr-row">' + (list[X.si + 1] ? '<button class="primary" data-act="ex:nextex">Next example ▶</button>' : '') + '<button class="ghost" data-act="ex:again">Play it again</button><button class="ghost" data-act="ex:close">Back to the lesson</button></div>' : '';
     const controls = X.waiting ? '<div class="tr-actions">' + choices + '</div>' : (X.done ? '' : '<div class="tr-actions"><button class="primary" data-act="ex:next">Next ▶</button></div>');
@@ -2404,6 +2509,7 @@ const Trainer = (() => {
       heroAct(v);
     },
     learn: v => { drill.ex = null; setTab(v); },
+    ui: v => { if (v === 'detail') { opts.detail = !opts.detail; saveOpts(); renderMain(); } },
     ex: v => {
       if (v.indexOf('start:') === 0) return startExample(v.slice(6), 0);
       const X = drill.ex; if (!X) return;
@@ -2474,11 +2580,13 @@ const Trainer = (() => {
   function wire() {
     const nav = $('navTrainer'); if (nav) nav.onclick = () => (shown ? close() : open());
     $('trTabs').onclick = (e) => { const b = pick(e, 'data-tab'); if (b) setTab(b.dataset.tab); };
-    $('trMain').onclick = (e) => {
+    const onAct = (e) => {
       const b = pick(e, 'data-act'); if (!b || b.disabled) return;
       const at = b.dataset.act.indexOf(':'), ns = b.dataset.act.slice(0, at), v = b.dataset.act.slice(at + 1);
       if (HANDLERS[ns]) HANDLERS[ns](v, b);
     };
+    $('trMain').onclick = onAct;
+    const side = $('trSide'); if (side) side.onclick = onAct;    // Continue / Got it / the numbers switch live in the right-hand column
     $('trMain').onchange = (e) => {
       if (e.target && e.target.id === 'trField') { opts.field = e.target.value; saveOpts(); return; }
       const r = pick(e, 'data-room');
@@ -2487,7 +2595,7 @@ const Trainer = (() => {
       opts[b.dataset.opt] = !!b.checked; saveOpts();
       if (b.dataset.opt === 'showBots') renderPlay();
       if (b.dataset.opt === 'pause' && !b.checked && g && !g.over) step();     // un-pausing lets the bots carry on
-      if (b.dataset.opt === 'advise' || b.dataset.opt === 'pause') renderPlay();
+      if (b.dataset.opt === 'advise' || b.dataset.opt === 'pause' || b.dataset.opt === 'detail') renderPlay();
     };
     $('trMain').onkeydown = (e) => {
       if (e.key !== 'Enter') return;
@@ -2500,7 +2608,7 @@ const Trainer = (() => {
 
   return {
     wire, open, close,
-    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain },
+    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor },
   };
 })();
 

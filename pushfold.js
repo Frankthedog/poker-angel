@@ -192,11 +192,11 @@ const PushFold = (() => {
       const pc = rangeShare(h, callFreqJ), eqc = pc ? eqVsRange(h, callFreqJ) : 0;
       evI += reach * pc * (eqc * iw[hero] + (1 - eqc) * il[hero]);
       evC += reach * pc * (eqc * win[hero] + (1 - eqc) * lose[hero]);
-      callers.push({ seat: j, needIcm: needI, needChips: needC, callPct: rangePct(callFreqJ), pc, eqWhenCalled: eqc });
+      callers.push({ seat: j, needIcm: needI, needChips: needC, callPct: rangePct(callFreqJ), pc, eqWhenCalled: eqc, win$: iw[hero], lose$: il[hero], winChips: win[hero], loseChips: lose[hero] });
       reach *= (1 - pc);
     }
     evI += reach * stealS[hero]; evC += reach * chipsSteal;
-    return { shove$: evI, fold$: fold[hero], shoveChips: evC, foldChips: chipsFold, foldEquity: reach, callers, heroRangePct: rangePct(heroRange), S };
+    return { shove$: evI, fold$: fold[hero], steal$: stealS[hero], shoveChips: evC, foldChips: chipsFold, stealChips: chipsSteal, foldEquity: reach, callers, heroRangePct: rangePct(heroRange), S };
   }
   // Hero facing an all-in from `pusher` (who had `pusherBehind` players behind them when they shoved).
   function callSpot(t, heroClass, pusher, pusherBehind) {
@@ -210,7 +210,7 @@ const PushFold = (() => {
     const needIcm = (ifold - il) / Math.max(1e-9, iw - il);
     const risk = Sp - t.posted[hero], pot = win[hero] - (t.stacks[hero] + t.posted[hero] - Sp);
     const needChips = risk / Math.max(1e-9, pot);
-    return { eq, needIcm, needChips, call$: eq * iw + (1 - eq) * il, fold$: ifold, pusherRangePct: rangePct(range), S: Sp };
+    return { eq, needIcm, needChips, call$: eq * iw + (1 - eq) * il, fold$: ifold, win$: iw, lose$: il, pusherRangePct: rangePct(range), S: Sp };
   }
 
   return { N, CLASSES, ix, combosOfClass, weights, setEquityTable, eqTable, eqVsRange, rangeShare, solve, freqToBits, bitsToFreq, pushFreq, callFreq, inPush, inCall, maxPush, maxCall, rangePct, icm, shoveSpot, callSpot, MAX_S };
