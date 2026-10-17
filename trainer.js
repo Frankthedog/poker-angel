@@ -1841,19 +1841,32 @@ const Trainer = (() => {
   function panelText() {
     const el = $('trPanel'); if (!el) return '';
     const c = el.cloneNode(true);
-    c.querySelectorAll('button, details, .tr-detail, .tr-speak, input, select, .tr-opt').forEach(x => x.remove());
+    c.querySelectorAll('button, details, .tr-detail, .tr-speak, input, select, .tr-optlist').forEach(x => x.remove());
     // a pause after each heading and block, and at each line break, so sentences don't run together
     c.querySelectorAll('div, b:not(.tr-lbl), br').forEach(x => x.after('. '));
     return c.textContent.replace(/\n+/g, '. ');
   }
-  // Read new text once (re-drawing the same explanation doesn't repeat it).
+  // Read only what's new. The column is re-drawn on every move and often keeps earlier text (your last
+  // explanation stays while the advice appears; each bot move adds a line), so the reader remembers,
+  // sentence by sentence, what it has already said in this hand / lesson step / replay and skips it.
+  const sentencesOf = t => t.split(/(?<=[.!?:])\s+/).map(x => x.trim()).filter(Boolean);
+  let saidKey = '', said = new Set();
+  const sayContext = () => tab + '|' + (g ? handKey() : '') + '|' + (drill.ex ? drill.ex.id + '.' + drill.ex.si : '') + '|' + (drill.replay ? drill.replay.rec.id : '');
+  function markSaid(t) { const key = sayContext(); if (key !== saidKey) { saidKey = key; said = new Set(); } sentencesOf(t).forEach(x => said.add(x)); }
   function autoSpeak(text) {
     if (!opts.speak || !CAN_SPEAK) return;
     clearTimeout(speakTimer);
     speakTimer = setTimeout(() => {
-      const t = forSpeech(text == null ? panelText() : text);
-      if (!t || t === spokenLast) return;
-      spokenLast = t; speak(t);
+      if (text != null) {                                         // a drill answer: read it once
+        const t = forSpeech(text);
+        if (!t || t === spokenLast) return;
+        spokenLast = t; speak(t); return;
+      }
+      const key = sayContext(); if (key !== saidKey) { saidKey = key; said = new Set(); }
+      const fresh = sentencesOf(forSpeech(panelText())).filter(x => !said.has(x));
+      if (!fresh.length) return;
+      fresh.forEach(x => said.add(x));
+      speak(fresh.join(' '));
     }, 180);
   }
   // What to read beside the table (explanation, advice, lesson notes) goes in the right-hand column.
@@ -2721,8 +2734,8 @@ const Trainer = (() => {
     learn: v => { drill.ex = null; setTab(v); },
     ui: v => {
       if (v === 'detail') { opts.detail = !opts.detail; saveOpts(); renderMain(); }
-      if (v === 'speak') { spokenLast = forSpeech(panelText()); speak(panelText()); }
-      if (v === 'speaktoggle') { opts.speak = !opts.speak; saveOpts(); spokenLast = ''; if (!opts.speak) hush(); renderMain(); }
+      if (v === 'speak') { const t = forSpeech(panelText()); markSaid(t); speak(t); }
+      if (v === 'speaktoggle') { opts.speak = !opts.speak; saveOpts(); spokenLast = ''; said = new Set(); if (!opts.speak) hush(); renderMain(); }
       if (v === 'hush') hush();
     },
     ex: v => {
@@ -2812,7 +2825,7 @@ const Trainer = (() => {
       if (b.dataset.opt === 'pause' && !b.checked && g && !g.over) step();     // un-pausing lets the bots carry on
       if (b.dataset.opt === 'advise' || b.dataset.opt === 'pause' || b.dataset.opt === 'detail') renderPlay();
       if (b.dataset.opt === 'watch') { renderPlay(); step(); }
-      if (b.dataset.opt === 'speak') { if (opts.speak) { spokenLast = ''; autoSpeak(); } else hush(); }
+      if (b.dataset.opt === 'speak') { if (opts.speak) { spokenLast = ''; said = new Set(); autoSpeak(); } else hush(); }
     };
     $('trMain').onkeydown = (e) => {
       if (e.key !== 'Enter') return;
