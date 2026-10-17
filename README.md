@@ -1,6 +1,6 @@
 # Poker Angel Trainer
 
-Play 6-max No-Limit Hold’em against bots and friends, with every decision explained, plus tournaments, push/fold and prize-money drills, lessons and stats.
+Play 8-handed No-Limit Hold’em against bots and friends, with every decision explained, plus tournaments, push/fold and prize-money drills, lessons and stats.
 
 Open the page, type your name, and **Host a table** — friends join with the 5-letter code. No account, nothing to install.
 
