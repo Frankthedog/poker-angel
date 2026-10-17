@@ -1791,8 +1791,68 @@ const Trainer = (() => {
       + '<div class="tr-plate"><b>' + esc(mine && room ? 'You' : p.name) + '</b><span class="pos">' + posOf(g, i) + '</span><span class="stk">' + bbs(r2(p.stack)) + (p.allin && !g.over ? ' · all-in' : '') + '</span>'
       + chips + tag + '</div>' + bubble + '</div>';
   }
+  // ---- reading explanations aloud ----
+  // The computer's own voice (speechSynthesis): nothing leaves the machine. With "Read explanations
+  // aloud" on, each new explanation is read once; 🔊 Read this reads the column on demand.
+  const CAN_SPEAK = typeof speechSynthesis !== 'undefined' && typeof SpeechSynthesisUtterance !== 'undefined';
+  const RANK_SAY = { A: 'Ace', K: 'King', Q: 'Queen', J: 'Jack', T: 'Ten', 10: 'Ten', 9: 'Nine', 8: 'Eight', 7: 'Seven', 6: 'Six', 5: 'Five', 4: 'Four', 3: 'Three', 2: 'Two' };
+  const SUIT_SAY = { '♠': 'spades', '♥': 'hearts', '♦': 'diamonds', '♣': 'clubs' };
+  // Text as it should sound: cards in words, no symbols, and the short codes in brackets left out
+  // (the full words are always just before them).
+  function forSpeech(t) {
+    return String(t || '')
+      .replace(/(10|[2-9TJQKA])([♠♥♦♣])/g, (m, r, su) => RANK_SAY[r] + ' of ' + SUIT_SAY[su])
+      .replace(/\s*\((?:UTG\+1|UTG|LJ|HJ|CO|BTN|SB|BB)\)/g, '')
+      .replace(/\s*\((?:[AKQJT2-9]{2}[so]?\+?(?:-[AKQJT2-9]{2}[so]?)?)\)/g, '')
+      .replace(/#(\d+)/g, 'number $1').replace(/(\d)\s*×/g, '$1 times')
+      .replace(/(\d)bb\b/g, '$1 big blinds')
+      .replace(/[\u{1F300}-\u{1FAFF}\u2600-\u27BF\uFE0F]/gu, '')
+      .replace(/[→·•]/g, ', ').replace(/\s—\s/g, ', ')
+      .replace(/(of (?:spades|hearts|diamonds|clubs)) (?=(?:Ace|King|Queen|Jack|Ten|Nine|Eight|Seven|Six|Five|Four|Three|Two) of )/g, '$1, ')
+      .replace(/\s+/g, ' ').replace(/\s+([,.;:])/g, '$1').replace(/([,.;:])(?:\s*[,.;:])+/g, '$1').trim();
+  }
+  let spokenLast = '', speakTimer = 0;
+  function pickVoice() {
+    const vs = speechSynthesis.getVoices();
+    return vs.find(v => /en-GB/i.test(v.lang) && /natural|online/i.test(v.name)) || vs.find(v => /en-GB/i.test(v.lang)) || vs.find(v => /^en/i.test(v.lang)) || null;
+  }
+  function speak(text) {
+    if (!CAN_SPEAK) return;
+    const t = forSpeech(text); if (!t) return;
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(t), v = pickVoice();
+      if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-GB';
+      u.rate = opts.speakRate || 1;
+      speechSynthesis.speak(u);
+    } catch (e) { console.error('speech', e); }
+  }
+  function hush() { if (CAN_SPEAK) try { speechSynthesis.cancel(); } catch (e) {} }
+  // What the right-hand column says, minus buttons, drop-downs and stat tables.
+  function panelText() {
+    const el = $('trPanel'); if (!el) return '';
+    const c = el.cloneNode(true);
+    c.querySelectorAll('button, details, .tr-detail, .tr-speak, input, select, .tr-opt').forEach(x => x.remove());
+    // a pause after each heading and block, and at each line break, so sentences don't run together
+    c.querySelectorAll('div, b:not(.tr-lbl), br').forEach(x => x.after('. '));
+    return c.textContent.replace(/\n+/g, '. ');
+  }
+  // Read new text once (re-drawing the same explanation doesn't repeat it).
+  function autoSpeak(text) {
+    if (!opts.speak || !CAN_SPEAK) return;
+    clearTimeout(speakTimer);
+    speakTimer = setTimeout(() => {
+      const t = forSpeech(text == null ? panelText() : text);
+      if (!t || t === spokenLast) return;
+      spokenLast = t; speak(t);
+    }, 180);
+  }
   // What to read beside the table (explanation, advice, lesson notes) goes in the right-hand column.
-  function setPanel(html) { const el = $('trPanel'); if (el) el.innerHTML = html || ''; }
+  function setPanel(html) {
+    const el = $('trPanel'); if (!el) return;
+    el.innerHTML = html ? (CAN_SPEAK ? '<div class="tr-row tr-speak"><button class="ghost tr-mini" data-act="ui:speak">🔊 Read this</button><button class="ghost tr-mini" data-act="ui:hush">⏹ Stop</button></div>' : '') + html : '';
+    if (html) autoSpeak();
+  }
   function feltHtml() {
     const pot = potTotal(g), betting = g.players.reduce((a, p) => a + p.bet, 0);
     let felt = '';
@@ -1885,6 +1945,7 @@ const Trainer = (() => {
     }
     const optsRow = '<label><input type="checkbox" data-opt="advise"' + (opts.advise ? ' checked' : '') + ' /> Advise me before I act</label>'
       + '<label><input type="checkbox" data-opt="detail"' + (opts.detail ? ' checked' : '') + ' /> 📊 Detailed explanations (stat tables)</label>'
+      + (CAN_SPEAK ? '<label><input type="checkbox" data-opt="speak"' + (opts.speak ? ' checked' : '') + ' /> 🔊 Read explanations aloud</label>' : '')
       + '<label><input type="checkbox" data-opt="pause"' + (pauseOn() ? ' checked' : '') + ' /> Explain after I act' + (room ? '' : ' (and pause)') + '</label>'
       + (room ? '' : '<label><input type="checkbox" data-opt="showBots"' + (opts.showBots ? ' checked' : '') + ' /> Show the bots’ cards</label>')
       + (room ? '' : '<label title="When you fold, the hand carries on one move at a time with the bots’ cards face up and each move explained."><input type="checkbox" data-opt="watch"' + (opts.watch !== false ? ' checked' : '') + ' /> 👀 Watch the bots after I fold</label>')
@@ -1942,7 +2003,7 @@ const Trainer = (() => {
   // ---- drills ----
   const rnd = n => Math.floor(Math.random() * n);
   const pickOf = arr => arr[rnd(arr.length)];
-  function resHtml(G, extra) { return '<div class="tr-res"><b>' + esc(plain(G.head)) + '</b>\n' + fmtWhy(G.why) + (extra || '') + '</div>'; }
+  function resHtml(G, extra) { autoSpeak(plain(G.head) + '. ' + plain(G.why)); return '<div class="tr-res"><b>' + esc(plain(G.head)) + '</b>\n' + fmtWhy(G.why) + (extra || '') + '</div>'; }
   function score(key, good) { const a = stats.drills[key]; a[0]++; if (good) a[1]++; saveStats(); if (key === 'pre' || key === 'pf') dailyAdd(key); }
 
   function genPre() {
@@ -2648,7 +2709,11 @@ const Trainer = (() => {
       heroAct(v);
     },
     learn: v => { drill.ex = null; setTab(v); },
-    ui: v => { if (v === 'detail') { opts.detail = !opts.detail; saveOpts(); renderMain(); } },
+    ui: v => {
+      if (v === 'detail') { opts.detail = !opts.detail; saveOpts(); renderMain(); }
+      if (v === 'speak') { spokenLast = forSpeech(panelText()); speak(panelText()); }
+      if (v === 'hush') hush();
+    },
     ex: v => {
       if (v.indexOf('start:') === 0) return startExample(v.slice(6), 0);
       const X = drill.ex; if (!X) return;
@@ -2736,6 +2801,7 @@ const Trainer = (() => {
       if (b.dataset.opt === 'pause' && !b.checked && g && !g.over) step();     // un-pausing lets the bots carry on
       if (b.dataset.opt === 'advise' || b.dataset.opt === 'pause' || b.dataset.opt === 'detail') renderPlay();
       if (b.dataset.opt === 'watch') { renderPlay(); step(); }
+      if (b.dataset.opt === 'speak') { if (opts.speak) { spokenLast = ''; autoSpeak(); } else hush(); }
     };
     $('trMain').onkeydown = (e) => {
       if (e.key !== 'Enter') return;
@@ -2748,7 +2814,7 @@ const Trainer = (() => {
 
   return {
     wire, open, close,
-    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf },
+    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech },
   };
 })();
 
