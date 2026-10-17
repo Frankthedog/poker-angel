@@ -1821,10 +1821,19 @@ const Trainer = (() => {
     const t = forSpeech(text); if (!t) return;
     try {
       speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(t), v = pickVoice();
-      if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-GB';
-      u.rate = opts.speakRate || 1;
-      speechSynthesis.speak(u);
+      const v = pickVoice(), parts = [];
+      // a sentence at a time (merged up to ~220 characters): one long utterance can stop part-way in
+      // Chromium and leave the voice silent for the rest of the session
+      for (const sentence of t.split(/(?<=[.!?:])\s+/)) {
+        if (parts.length && parts[parts.length - 1].length + sentence.length < 220) parts[parts.length - 1] += ' ' + sentence; else parts.push(sentence);
+      }
+      for (const part of parts) {
+        const u = new SpeechSynthesisUtterance(part);
+        if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-GB';
+        u.rate = opts.speakRate || 1;
+        speechSynthesis.speak(u);
+      }
+      if (speechSynthesis.paused) speechSynthesis.resume();
     } catch (e) { console.error('speech', e); }
   }
   function hush() { if (CAN_SPEAK) try { speechSynthesis.cancel(); } catch (e) {} }
@@ -1850,7 +1859,8 @@ const Trainer = (() => {
   // What to read beside the table (explanation, advice, lesson notes) goes in the right-hand column.
   function setPanel(html) {
     const el = $('trPanel'); if (!el) return;
-    el.innerHTML = html ? (CAN_SPEAK ? '<div class="tr-row tr-speak"><button class="ghost tr-mini" data-act="ui:speak">🔊 Read this</button><button class="ghost tr-mini" data-act="ui:hush">⏹ Stop</button></div>' : '') + html : '';
+    el.innerHTML = html ? (CAN_SPEAK ? '<div class="tr-row tr-speak"><button class="' + (opts.speak ? 'primary' : 'ghost') + ' tr-mini" data-act="ui:speaktoggle" title="Read each new explanation aloud, hand after hand, until you switch it off">' + (opts.speak ? '🔊 Read aloud: on' : '🔇 Read aloud: off') + '</button>'
+      + '<button class="ghost tr-mini" data-act="ui:speak">↻ Read again</button><button class="ghost tr-mini" data-act="ui:hush" title="Stop this explanation — reading stays on for the next one">⏹ Stop</button></div>' : '') + html : '';
     if (html) autoSpeak();
   }
   function feltHtml() {
@@ -2712,6 +2722,7 @@ const Trainer = (() => {
     ui: v => {
       if (v === 'detail') { opts.detail = !opts.detail; saveOpts(); renderMain(); }
       if (v === 'speak') { spokenLast = forSpeech(panelText()); speak(panelText()); }
+      if (v === 'speaktoggle') { opts.speak = !opts.speak; saveOpts(); spokenLast = ''; if (!opts.speak) hush(); renderMain(); }
       if (v === 'hush') hush();
     },
     ex: v => {
