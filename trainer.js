@@ -1051,8 +1051,8 @@ const Trainer = (() => {
   const TABS = [['play', '🃏 Play'], ['learn', '📘 Learn'], ['hands', '📜 Hand history'], ['pf', 'Push/fold'], ['icm', 'Prize money (ICM)'], ['pre', 'Preflop'], ['odds', 'Pot odds'], ['eq', 'Equity'], ['outs', 'Outs'], ['sd', 'Showdown'], ['charts', 'Charts'], ['stats', 'Stats']];
   const LAYOUT = {
     6: { seat: [[50, 101], [5, 76], [8, 16], [50, -4], [92, 16], [95, 76]], bet: [[50, 74], [22, 64], [24, 32], [50, 20], [76, 32], [78, 64]], deal: [[60, 80], [17, 52], [18, 40], [61, 15], [82, 40], [83, 52]] },
-    8: { seat: [[50, 101], [19, 94], [-7, 47], [19, 2], [50, -5], [81, 2], [107, 47], [81, 94]],
-         bet: [[50, 72], [37, 66], [16, 47], [33, 33], [50, 31], [67, 33], [84, 47], [63, 66]],
+    8: { seat: [[50, 101], [19, 94], [-5, 47], [19, 2], [50, -5], [81, 2], [105, 47], [81, 94]],
+         bet: [[50, 72], [37, 66], [16, 47], [33, 33], [61, 24], [67, 33], [84, 47], [63, 66]],
          deal: [[64, 80], [35, 86], [9, 64], [34, 14], [61, 14], [66, 14], [91, 64], [65, 86]] },
   };
   const layout = () => LAYOUT[g.players.length] || LAYOUT[8];
@@ -1126,7 +1126,7 @@ const Trainer = (() => {
     const d = mine[mine.length - 1];
     return d && d.id !== ackId ? d : null;
   }
-  const holding = () => !room && pauseOn() && !!myPending() && g && !g.over;
+  const holding = () => !room && pauseOn() && !!myPending() && g && !g.over && !watchOn();
   let room = null;                  // { role, code, peer, conns (host: Map conn → {seat,name,pending}), conn (guest), faceUp, players }
   const shownDec = new Set();       // decisions already in my feed
   let summarized = 0, introduced = 0;
@@ -1175,7 +1175,7 @@ const Trainer = (() => {
     const log = g.watchLog || [], after = log.filter(w => w.at > fold), before = log.filter(w => w.at < fold);
     const latest = after[after.length - 1], earlier = after.slice(0, -1);
     return '<div class="tr-explain tr-narrate"><b>👀 You folded — watch how the bots play it out</b>'
-      + (latest ? line(latest) : '<div class="tr-why">Their cards are face up now. Press <b>Next ▶</b> to see each move and why they make it.</div>')
+      + (latest ? line(latest) : '<div class="tr-why">Their cards are face up now. Press <b>Next move ▶</b> under the table to see each move and why they make it.</div>')
       + (earlier.length ? '<details><summary>Earlier moves since you folded (' + earlier.length + ')</summary>' + earlier.map(line).join('') + '</details>' : '')
       + (before.length ? '<details><summary>Why they played as they did before you folded (' + before.length + ')</summary>' + before.map(line).join('') + '</details>' : '')
       + '</div>';
@@ -1926,9 +1926,9 @@ const Trainer = (() => {
     } else if (g.over) {
       actions = (isGuest() ? '<span class="tr-wait">Waiting for the host to deal the next hand…</span>' : '<button class="primary" data-act="play:next">Next hand ▶</button>') + extras;
     } else if (holding()) {
-      actions = '<span class="tr-wait">Read the explanation above, then press Continue.</span>';
+      actions = '<button class="primary" data-act="play:continue">Continue ▶</button><span class="tr-dim">Read the explanation on the right first — the bots wait for you.</span>';
     } else if (watching()) {
-      actions = '<button class="primary" data-act="play:wnext">Next ▶</button><button class="ghost" data-act="play:wall">Play the hand out ▶▶</button><span class="tr-dim">' + esc(g.players[g.toAct].name) + ' is next to act.</span>';
+      actions = '<button class="primary" data-act="play:wnext">Next move ▶</button><button class="ghost" data-act="play:wall">Play the hand out ▶▶</button><span class="tr-dim">You folded — ' + esc(g.players[g.toAct].name) + ' is next to act. Each move is explained on the right.</span>';
     } else if (me < 0) actions = '<span class="tr-wait">Watching — you’re dealt in from the next ' + (T ? 'game' : 'hand') + '.</span>';
     else if (T && g.players[me].out) actions = '<span class="tr-wait">You’re out in ' + ordinal(T.place[me]) + ' — the rest plays on.</span>' + (isGuest() ? '' : '<button class="ghost" data-act="tour:menu">Leave this tournament</button>');
     else if (g.toAct !== me) actions = '<span class="tr-wait">' + (g.toAct >= 0 ? esc(g.players[g.toAct].name) + ' is thinking…' : 'Sending…') + '</span>';
@@ -1955,7 +1955,7 @@ const Trainer = (() => {
       + '<div class="tr-actions">' + actions + '</div>'
       + '<div class="tr-key">Key: ' + Array.from(new Set(g.players.map((q, j) => posOf(g, j)).filter(Boolean))).map(p => '<b>' + p + '</b> ' + POS_FULL[p] + (p === 'BTN' ? ' (the dealer)' : p === 'UTG' ? ' (first to act)' : '')).join(' · ') + ' · <b>bb</b> big blinds · <b>D</b> dealer button</div>'
       + '<div class="tr-opts">' + optsRow + '<span>Hand #' + g.handNo + (T ? '' : ' · your session ' + (stats.net >= 0 ? '+' : '') + bbs(stats.net)) + '</span></div>';
-    setPanel(panel + advice + watchHtml());
+    setPanel(watchHtml() + panel + advice);
     renderSpot();
   }
   function renderSpot() {
