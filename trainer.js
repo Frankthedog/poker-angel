@@ -2095,11 +2095,228 @@ const Trainer = (() => {
         + '<p>The trainer prices every short-stack decision in prize money. When chips alone and prize money disagree, the grade tells you — that difference is ICM.</p>' },
     ];
   }
+  // ---- example hands: each lesson plays a real hand at the table, step by step ----
+  // A script fixes the seats, the cards and the board, then lists what happens. Players nobody
+  // mentions fold (or check, when that's free) as their turn comes, exactly as at a real table. At a
+  // "you" step the reader chooses; the trainer's own grading explains the best play (test/lessons.test.js
+  // checks that every script's play IS the best play by the trainer's maths), then the script carries on.
+  const LESSON_HANDS = {
+    basics: [{ title: 'A whole hand, start to finish', pos: 'BTN', seed: 11, cards: { BTN: 'As Kd', BB: 'Qc 7c' }, board: 'Ks 7d 2c 9h 4s', steps: [
+      { say: 'Six players, 100 big blinds each. You are on the Button — the dealer seat, last to act after the flop. The Small Blind and Big Blind have put in their forced bets, and the first players to act fold.' },
+      { you: true, play: ['raise', 2.5], ask: 'Everyone before you folded. It’s your turn.' },
+      { pos: 'SB', act: ['fold'], say: 'The Small Blind folds.' },
+      { pos: 'BB', act: ['call'], say: 'The Big Blind calls 1.5 more. The pot is 5.5 big blinds, and the flop comes K♠ 7♦ 2♣ — you have top pair with the best kicker.' },
+      { pos: 'BB', act: ['check'], say: 'The Big Blind checks to you.' },
+      { you: true, play: ['raise', 3], ask: 'Check, or bet?' },
+      { pos: 'BB', act: ['call'], say: 'The Big Blind calls. The pot is 11.5 big blinds. The turn is the 9♥.' },
+      { pos: 'BB', act: ['check'], say: 'The Big Blind checks again.' },
+      { you: true, play: ['raise', 7], ask: 'Check, or bet again?' },
+      { pos: 'BB', act: ['fold'], say: 'The Big Blind folds — they had a pair of Sevens, which couldn’t keep calling. You win the pot without a showdown.' },
+    ] }],
+    position: [
+      { title: 'King-Ten from the first seat', pos: 'UTG', seed: 21, cards: { UTG: 'Kc Th' }, board: '2c 3d 4h 5s 6c', steps: [
+        { say: 'You are Under the Gun — the first player to act before the flop. Five players are still to act after you, and any of them could have a strong hand.' },
+        { you: true, play: ['fold'], ask: 'You have King-Ten offsuit. Raise or fold?' },
+        { end: true, say: 'Folding is right from the first seat: King-Ten offsuit is a decent hand, but with five players behind it often runs into something better.' },
+      ] },
+      { title: 'The same hand on the Button', pos: 'BTN', seed: 22, cards: { BTN: 'Kc Th' }, board: '2c 3d 4h 5s 6c', steps: [
+        { say: 'Same cards — King-Ten offsuit — but now you are on the Button. Everyone before you folds; only the two blinds are left, and you’ll act last after the flop.' },
+        { you: true, play: ['raise', 2.5], ask: 'Raise or fold?' },
+        { pos: 'SB', act: ['fold'], say: 'The Small Blind folds.' },
+        { pos: 'BB', act: ['fold'], say: 'The Big Blind folds too. You win the blinds without a fight — that’s why late seats raise so many more hands.' },
+      ] },
+    ],
+    preflop: [{ title: 'Re-raising with Queens', pos: 'CO', seed: 31, cards: { CO: 'Qs Qd', UTG: 'Ah Jh' }, board: '8c 4d 2h 9s 3c', steps: [
+      { say: 'You are in the Cutoff with a pair of Queens.' },
+      { pos: 'UTG', act: ['raise', 2.5], say: 'Under the Gun raises to 2.5 big blinds.' },
+      { you: true, play: ['raise', 7.5], ask: 'The Hijack folds. It’s your turn, facing a raise.' },
+      { pos: 'UTG', act: ['call'], say: 'Everyone else folds and Under the Gun calls. The pot is 16.5 big blinds. The flop: 8♣ 4♦ 2♥ — all small cards, so your Queens are still an overpair.' },
+      { pos: 'UTG', act: ['check'], say: 'Under the Gun checks.' },
+      { you: true, play: ['raise', 8], ask: 'Check, or bet?' },
+      { pos: 'UTG', act: ['fold'], say: 'Under the Gun folds Ace-Jack — two overcards that missed. You win 16.5 big blinds.' },
+    ] }],
+    potodds: [{ title: 'Calling a draw at the right price — and folding at the wrong one', pos: 'BB', seed: 41, cards: { BB: '8h 7h', BTN: 'Ac Kd' }, board: 'Kh 6h 2c 3d Ts', steps: [
+      { say: 'You are in the Big Blind with Eight-Seven of hearts.' },
+      { pos: 'BTN', act: ['raise', 2.5], say: 'Everyone folds to the Button, who raises to 2.5 big blinds. The Small Blind folds.' },
+      { you: true, play: ['call'], ask: 'Your turn in the Big Blind.' },
+      { pos: 'BB', act: ['check'], say: 'The flop is K♥ 6♥ 2♣: you have a flush draw — two more hearts on the board. You check.' },
+      { pos: 'BTN', act: ['raise', 3], say: 'The Button bets 3 big blinds into the 5.5 in the pot.' },
+      { you: true, play: ['call'], ask: 'Fold, call or raise?' },
+      { pos: 'BB', act: ['check'], say: 'The turn is the 3♦ — no heart. You check.' },
+      { pos: 'BTN', act: ['raise', 8], say: 'The Button bets 8 big blinds into 11.5 — a bigger bet, and now only one card is left to come.' },
+      { you: true, play: ['fold'], ask: 'Fold, or call again?' },
+      { end: true, say: 'Same draw, different price: on the flop you had two cards to hit and a small price, so calling paid. On the turn the price went up and only one card was left, so folding was right.' },
+    ] }],
+    postflop: [{ title: 'Value betting a calling station', pos: 'BTN', seed: 51, cards: { BTN: 'Ac Jc', BB: 'Js 9d' }, board: 'Jh 7s 3d 2c 4s', styles: { BB: ['station', 'casual'] }, steps: [
+      { say: 'You are on the Button with Ace-Jack suited. The Big Blind is a calling station — someone who calls far too often and rarely folds a pair.' },
+      { you: true, play: ['raise', 2.5], ask: 'Everyone folds to you.' },
+      { pos: 'BB', act: ['call'], say: 'The Small Blind folds; the Big Blind calls. The flop: J♥ 7♠ 3♦ — you have top pair, best kicker.' },
+      { pos: 'BB', act: ['check'], say: 'The Big Blind checks.' },
+      { you: true, play: ['raise', 3], ask: 'Check or bet?' },
+      { pos: 'BB', act: ['call'], say: 'The station calls. The turn is the 2♣.' },
+      { pos: 'BB', act: ['check'], say: 'Checked to you again.' },
+      { you: true, play: ['raise', 7], ask: 'Keep betting?' },
+      { pos: 'BB', act: ['call'], say: 'Another call. The river is the 4♠.' },
+      { pos: 'BB', act: ['check'], say: 'The Big Blind checks one last time.' },
+      { you: true, play: ['raise', 8], ask: 'Last decision: check or bet?' },
+      { pos: 'BB', act: ['call'], say: 'The station calls with Jack-Nine — a worse Jack — and you win a big pot. Against players who call too much, keep betting your good hands, and don’t bluff them.' },
+    ] }],
+    sizing: [{ title: 'Betting big on a board full of draws', pos: 'BTN', seed: 61, cards: { BTN: '9s 9d', BB: 'Ah 4h' }, board: '9h 8h 6c 2s Kd', steps: [
+      { say: 'You are on the Button with a pair of Nines.' },
+      { you: true, play: ['raise', 2.5], ask: 'Everyone folds to you.' },
+      { pos: 'BB', act: ['call'], say: 'The Small Blind folds and the Big Blind calls. The flop: 9♥ 8♥ 6♣ — you have three Nines, but the board is full of possible straights and flushes.' },
+      { pos: 'BB', act: ['check'], say: 'The Big Blind checks.' },
+      { you: true, play: ['raise', 4], ask: 'Check or bet — and how much?' },
+      { pos: 'BB', act: ['call'], say: 'The Big Blind calls (they have a flush draw). The turn is the 2♠ — a blank.' },
+      { pos: 'BB', act: ['check'], say: 'Checked to you.' },
+      { you: true, play: ['raise', 9], ask: 'Bet again?' },
+      { pos: 'BB', act: ['fold'], say: 'The flush draw folds: your big bets made chasing it too expensive. Small bets here would have given them a cheap chance to beat you.' },
+    ] }],
+    short: [{ title: 'All-in with 10 big blinds', pos: 'BTN', seed: 71, tourBB: 10, cards: { BTN: 'Kd Ts' }, board: '2c 7d 9h 3s 4c', steps: [
+      { say: 'A tournament: everyone has 10 big blinds left, and the Big Blind also pays an ante. With a stack this short there is no room for small raises.' },
+      { you: true, play: ['raise', 999], ask: 'Everyone folds to you on the Button with King-Ten offsuit.' },
+      { pos: 'SB', act: ['fold'], say: 'The Small Blind folds.' },
+      { pos: 'BB', act: ['fold'], say: 'The Big Blind folds. You win the blinds and the ante — worth about a quarter of your stack, without seeing a flop.' },
+    ] }],
+  };
+  // Build a scripted hand: the reader sits at the bottom (seat 0) in the script's position.
+  function lessonGame(sc) {
+    const rng = mulberry(sc.seed || 7);
+    const g0 = newGame(rng, 'mixed');
+    g0.players.forEach((p, i) => { if (i) { p.style = 'tag'; p.level = 'regular'; } });
+    g0.players[0].name = 'You';
+    if (sc.tourBB) newTournament(g0, { startBB: sc.tourBB, perLevel: 50 });
+    const k = POS.indexOf(sc.pos), button = (6 - k) % 6;
+    g0.button = (button + 5) % 6;                                 // newHand moves it one seat on
+    newHand(g0, rng);
+    const seatOf = p => (g0.button + POS.indexOf(p)) % 6;
+    for (const [p, st] of Object.entries(sc.styles || {})) { const q = g0.players[seatOf(p)]; q.style = st[0]; q.level = st[1]; }
+    const parse = str => str.split(' ').map(s => ({ r: RK.indexOf(s[0]) + 2, s: SU.indexOf(s[1]) }));
+    const fixed = {}; for (const [p, c] of Object.entries(sc.cards || {})) fixed[seatOf(p)] = parse(c);
+    const board = sc.board ? parse(sc.board) : [];
+    const used = new Set(); Object.values(fixed).flat().concat(board).forEach(c => used.add(cid(c)));
+    const rest = []; for (let id = 0; id < 52; id++) if (!used.has(id)) rest.push(fromId(id));
+    for (let i = rest.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); const t = rest[i]; rest[i] = rest[j]; rest[j] = t; }
+    g0.players.forEach((p, i) => { if (!p.out) p.cards = fixed[i] || [rest.pop(), rest.pop()]; });
+    // the deck is popped: burn, flop ×3, burn, turn, burn, river
+    const b = board.slice(); while (b.length < 5) b.push(rest.pop());
+    const burns = [rest.pop(), rest.pop(), rest.pop()];
+    g0.deck = rest.concat([b[4], burns[2], b[3], burns[1], b[2], b[1], b[0], burns[0]]);
+    g0.lesson = true;
+    return g0;
+  }
+  // Fold (or check, when free) every player whose turn comes before `seat` — the players a script leaves out.
+  function autoTo(G, seat) {
+    const out = [];
+    let guard = 0;
+    while (!G.over && G.toAct !== seat && guard++ < 50) {
+      const i = G.toAct, free = legal(G, i).toCall === 0;
+      act(G, i, { type: free ? 'check' : 'fold' });
+      out.push(posOf(G, i) + (free ? ' checks' : ' folds'));
+    }
+    return out;
+  }
+  // The trainer's own best play for seat i (the same maths as the grades and the advice).
+  function bestKind(G, i, rng) {
+    const s = spot(G, i), sp = !s.street && shortSpot(G, i), p = G.players[i];
+    if (sp) { const go = gradeShort(G, i, sp.type === 'shove' ? 'raise' : 'call', p.bet + p.stack); return go.v === 'good' ? (sp.type === 'shove' ? 'raise' : 'call') : 'fold'; }
+    if (!s.street) return preflopAdvice(s.k, s).best;
+    const E = equityVsRanges(s.cards, s.board, s.opps, 6000, rng);
+    const kinds = s.toCall > 0 ? ['raise', 'call', 'fold'] : ['raise', 'check'];
+    const rated = kinds.map(k => ({ k, G: gradePost(s, k, E) }));
+    return (rated.find(r => r.G.v === 'good') || rated.find(r => r.G.v === 'ok') || rated[0]).k;
+  }
+  // Grade the reader's choice at a "you" step, like a real decision (without playing it).
+  function gradeChoice(G, i, kind, to) {
+    const s = spot(G, i), L = legal(G, i);
+    let k = kind;
+    if (k === 'raise' && (!L.canRaise || !(to > G.curBet))) k = 'call';
+    if (k === 'call' && L.toCall === 0) k = 'check';
+    if (k === 'check' && L.toCall > 0) k = 'fold';
+    const E = s.street ? equityVsRanges(s.cards, s.board, s.opps, 4000) : null;
+    const short = !s.street && gradeShort(G, i, k, to);
+    const Gr = short || withSizing(s.street ? gradePost(s, k, E) : gradePre(s, k), s, k, Math.max(L.minTo, Math.min(L.maxTo, half(Number(to) || 0))), E);
+    return { kind: k, verb: verbOf(k, s), G: Gr };
+  }
+  // ---- the example-hand player (Learn tab) ----
+  function startExample(id, si) {
+    const list = LESSON_HANDS[id]; if (!list || !list[si]) return;
+    const sc = list[si];
+    drill.ex = { id, si, sc, g: lessonGame(sc), i: 0, notes: [], feedback: null, waiting: false, done: false };
+    exAdvance();
+  }
+  // Play script steps until one needs the reader: a note to read (Next) or a decision to make.
+  function exAdvance() {
+    const X = drill.ex; if (!X || X.done) return renderExample();
+    X.feedback = null;
+    const st = X.sc.steps[X.i];
+    if (!st || X.g.over) { X.done = true; return renderExample(); }
+    if (st.end) { X.notes.push(st.say); X.done = true; return renderExample(); }
+    if (st.you) {
+      const auto = autoTo(X.g, 0);
+      if (auto.length) X.notes.push(auto.join(', ') + '.');
+      X.notes.push(st.ask); X.waiting = true; return renderExample();
+    }
+    if (st.pos) {
+      const seat = (X.g.button + POS.indexOf(st.pos)) % 6;
+      autoTo(X.g, seat);
+      if (!X.g.over && X.g.toAct === seat) act(X.g, seat, { type: st.act[0], to: st.act[1] });
+    }
+    if (st.say) X.notes.push(st.say);
+    X.i++;
+    if (X.g.over && X.i >= X.sc.steps.length) X.done = true;
+    renderExample();
+  }
+  function exChoose(kind) {
+    const X = drill.ex; if (!X || !X.waiting) return;
+    const st = X.sc.steps[X.i], L = legal(X.g, 0);
+    const to = kind === 'raise' ? (st.play[0] === 'raise' ? st.play[1] : (sizes()[0] || {}).to) : 0;
+    const saved = { g, me }; g = X.g; me = 0;
+    let res; try { res = gradeChoice(X.g, 0, kind, kind === 'allin' ? L.maxTo : to); } finally { g = saved.g; me = saved.me; }
+    X.feedback = res;
+    act(X.g, 0, { type: st.play[0], to: st.play[1] });         // the hand carries on with the best play
+    X.waiting = false; X.i++;
+    if (X.g.over && X.i >= X.sc.steps.length) X.done = true;
+    renderExample();
+  }
+  function renderExample() {
+    const X = drill.ex, list = LESSON_HANDS[X.id], m = $('trMain');
+    const saved = { g, me, room, show: opts.showBots };
+    let felt, choices = '';
+    g = X.g; me = 0; room = null; opts.showBots = false;
+    try {
+      felt = feltHtml();
+      if (X.waiting) {
+        const L = legal(X.g, 0), st = X.sc.steps[X.i], b = ['<button class="fold" data-act="ex:fold">Fold</button>'];
+        b.push(L.toCall > 0 ? '<button data-act="ex:call">Call ' + bbs(L.toCall) + '</button>' : '<button data-act="ex:check">Check</button>');
+        if (L.canRaise) {
+          const to = st.play[0] === 'raise' ? Math.min(st.play[1], L.maxTo) : ((sizes()[0] || {}).to || L.minTo);
+          if (to < L.maxTo - 0.01) b.push('<button class="raise" data-act="ex:raise">' + (X.g.curBet > 0 && X.g.street === 0 || L.toCall > 0 ? 'Raise to ' : 'Bet ') + bbs(to) + '</button>');
+          b.push('<button class="raise" data-act="ex:allin">All-in ' + bbs(L.maxTo) + '</button>');
+        }
+        choices = b.join('');
+      }
+    } finally { g = saved.g; me = saved.me; room = saved.room; opts.showBots = saved.show; }
+    const last = X.notes.slice(-1)[0] || '', earlier = X.notes.slice(0, -1);
+    const fb = X.feedback ? '<div class="tr-explain"><b>' + esc(plain('You chose: ' + X.feedback.verb + ' · ' + X.feedback.G.head)) + '</b><div class="tr-why">' + fmtWhy(X.feedback.G.why) + '</div></div>' : '';
+    const end = X.done ? (X.g.over && X.g.result ? '<div class="tr-dim">' + esc(plain(X.g.result.wins.map(w => (w.i === 0 ? 'You win ' : X.g.players[w.i].name + ' wins ') + bbs(r2(w.amt)) + (w.name ? ' with ' + w.name : '')).join(' · '))) + '</div>' : '')
+      + '<div class="tr-row">' + (list[X.si + 1] ? '<button class="primary" data-act="ex:nextex">Next example ▶</button>' : '') + '<button class="ghost" data-act="ex:again">Play it again</button><button class="ghost" data-act="ex:close">Back to the lesson</button></div>' : '';
+    const controls = X.waiting ? '<div class="tr-actions">' + choices + '</div>' : (X.done ? '' : '<div class="tr-actions"><button class="primary" data-act="ex:next">Next ▶</button></div>');
+    m.innerHTML = '<div class="tr-replay-head"><button class="ghost" data-act="ex:close">← Lessons</button><b>Example hand · ' + esc(X.sc.title) + '</b>'
+      + (list.length > 1 ? '<span class="tr-dim">' + (X.si + 1) + ' of ' + list.length + '</span>' : '') + '</div>'
+      + '<div class="tr-felt-wrap"><div class="tr-felt">' + felt + '</div></div>'
+      + fb
+      + '<div class="tr-explain tr-narrate"><b>' + esc(plain(last)) + '</b>' + (earlier.length ? '<details><summary>What happened so far</summary><div class="tr-why">' + esc(plain(earlier.join('\n'))) + '</div></details>' : '') + end + '</div>'
+      + controls;
+  }
+
   function renderLearn() {
+    if (drill.ex) return renderExample();
     const L = lessons(), open = drill.learnOpen || 'basics';
     $('trMain').innerHTML = '<div class="tr-drill tr-learn"><div class="tr-q"><b>Learn the betting strategy</b><br><span class="tr-dim">Short lessons in order. The trainer grades you against exactly these rules.</span></div>'
       + L.map((x, i) => '<details' + (x.id === open ? ' open' : '') + ' data-lesson="' + x.id + '"><summary><span class="tr-lnum">' + (i + 1) + '</span>' + esc(x.title) + '</summary><div class="tr-lbody">' + x.body
-        + (x.practice ? '<div class="tr-row"><button class="primary" data-act="learn:' + x.practice[0] + '">Practise: ' + esc(x.practice[1]) + ' ▶</button></div>' : '') + '</div></details>').join('')
+        + '<div class="tr-row">' + (LESSON_HANDS[x.id] ? '<button class="primary" data-act="ex:start:' + x.id + '">▶ Play the example hand' + (LESSON_HANDS[x.id].length > 1 ? 's' : '') + '</button>' : '')
+        + (x.practice ? '<button class="ghost" data-act="learn:' + x.practice[0] + '">Practise: ' + esc(x.practice[1]) + '</button>' : '') + '</div></div></details>').join('')
       + '</div>';
     $('trMain').querySelectorAll('details').forEach(d => d.addEventListener('toggle', () => { if (d.open) drill.learnOpen = d.dataset.lesson; }));
   }
@@ -2181,7 +2398,16 @@ const Trainer = (() => {
       if (v === 'raiseTo') { const x = parseFloat(($('trTo') || {}).value); if (!isFinite(x)) return; return heroAct('raise', x); }
       heroAct(v);
     },
-    learn: v => setTab(v),
+    learn: v => { drill.ex = null; setTab(v); },
+    ex: v => {
+      if (v.indexOf('start:') === 0) return startExample(v.slice(6), 0);
+      const X = drill.ex; if (!X) return;
+      if (v === 'next') return exAdvance();
+      if (v === 'nextex') return startExample(X.id, X.si + 1);
+      if (v === 'again') return startExample(X.id, X.si);
+      if (v === 'close') { drill.learnOpen = X.id; drill.ex = null; return renderLearn(); }
+      exChoose(v);
+    },
     hist: v => {
       if (v.indexOf('open:') === 0) { const rec = history.find(h => h.id === v.slice(5)); if (rec) drill.replay = { rec, step: 0 }; return renderHands(); }
       const R = drill.replay; if (!R && v !== 'close') return;
@@ -2269,7 +2495,7 @@ const Trainer = (() => {
 
   return {
     wire, open, close,
-    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry },
+    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind },
   };
 })();
 
