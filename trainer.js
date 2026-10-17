@@ -222,10 +222,23 @@ const Trainer = (() => {
     nit: { label: 'nit (only premium hands)', widen: -0.06, call: -1, aggr: 0.45, bluff: 0.04, sticky: -0.04 },
     station: { label: 'calling station', widen: 0.05, call: 0.3, aggr: 0.3, bluff: 0.05, sticky: 0.14, limp: 0.5 },
     maniac: { label: 'maniac', widen: 0.36, call: 0.15, aggr: 0.95, bluff: 0.35, sticky: 0.06 },
-    fish: { label: 'recreational (limps and calls)', widen: 0.2, call: 0.35, aggr: 0.25, bluff: 0.05, sticky: 0.1, limp: 0.7 },
+    fish: { label: 'recreational (limps and calls)', widen: 0.2, call: 0.35, aggr: 0.25, bluff: 0.05, sticky: 0.1, limp: 0.8 },
     weaktight: { label: 'weak-tight (folds to pressure)', widen: -0.03, call: -1, aggr: 0.5, bluff: 0.05, sticky: -0.06, foldToAggr: 0.08 },
     trapper: { label: 'trapper (slow-plays big hands)', widen: 0, call: 0.05, aggr: 0.55, bluff: 0.08, sticky: 0.02, slowplay: 0.6 },
     shark: { label: 'shark (strong all-rounder)', widen: 0.02, call: 0, aggr: 0.8, bluff: 0.14, sticky: 0 },
+  };
+  // How each style plays, in a sentence — shown beside every explained bot move, so you learn to spot
+  // the type and what to do against it.
+  const STYLE_HOW = {
+    tag: 'Plays few hands, and bets and raises the good ones hard. The solid winning style — respect its bets.',
+    lag: 'Plays lots of hands and keeps up the pressure with bets and raises. Hard to read; you can call it down a little lighter.',
+    nit: 'Only plays premium hands and rarely bluffs. When it bets or raises, believe it — and steal its blinds.',
+    station: 'Calls far too often and rarely raises. Never bluff it; bet your good hands bigger, because it pays you off.',
+    maniac: 'Raises and bets almost everything, often with nothing. Let it bluff into your strong hands; don’t try to push it off a hand.',
+    fish: 'A recreational player: limps in and calls with too many hands, chasing draws. Bet your good hands for value.',
+    weaktight: 'Plays tight and gives up when someone bets. Bluff it more; when it does fight back, it has a strong hand.',
+    trapper: 'Checks and calls with its very best hands to trap you. When it suddenly raises late in a hand, slow down.',
+    shark: 'A strong all-rounder that plays close to the right strategy — the toughest player at the table. Avoid big pots with it unless your hand is strong.',
   };
   // Skill: how often a player makes a random, unconsidered play instead of their normal one.
   const SKILL = { beginner: { name: 'beginner', err: 0.2 }, casual: { name: 'casual', err: 0.1 }, regular: { name: 'regular', err: 0.04 }, pro: { name: 'pro', err: 0 } };
@@ -497,48 +510,105 @@ const Trainer = (() => {
     const limpers = g.players.filter((q, j) => j !== i && q.acted && !q.folded && q.bet === g.curBet && posOf(g, j) !== 'BB').length;
     return (posOf(g, i) === 'SB' ? 3 : 2.5) + limpers * 1.5;
   };
+  // Every bot decision carries a plain-English reason (d.why), shown when you watch a hand you've
+  // folded out of. Building a reason never draws from rng, so explained and silent play are identical.
+  const why = (d, text) => { d.why = text; return d; };
+  const pctW = v => r1(v * 100) + '%';
+  const styleName = k => STYLES[k] ? STYLES[k].label.replace(/ \(.*\)$/, '') : 'player';   // "weak-tight (folds to pressure)" → "weak-tight"
+  // "a pair of Aces", "two pair, Kings and Sevens", "just Queen high"
+  const madeHand = (cards, board) => {
+    const n = handName(evalHand(cards.concat(board)));
+    if (/^High card/.test(n)) return 'just ' + n.replace(/^High card,?\s*/, '') + ' high';
+    if (/^(Pair|Straight|Flush|Full house|Royal flush)/.test(n)) return 'a ' + n.charAt(0).toLowerCase() + n.slice(1);
+    return n.charAt(0).toLowerCase() + n.slice(1);
+  };
+  // The best players don't play one fixed style. The shark changes gear about every 10 hands (tighter,
+  // then looser) so it can't be read; and the shark and pro-level tight/loose-aggressive players pick
+  // their bluffs — against players who fold, heads-up, in position, on a scary card — and don't bluff
+  // players who never fold. Gear comes from the hand number, not rng.
+  const isAdaptive = p => p.style === 'shark' || (p.level === 'pro' && (p.style === 'tag' || p.style === 'lag'));
+  function gearOf(g, i) {
+    const p = g.players[i];
+    if (p.style !== 'shark') return { widen: 0, loose: false, note: '' };
+    const loose = Math.floor(((g.handNo || 0) + i * 3) / 10) % 2 === 1;
+    return loose ? { widen: 0.08, loose: true, note: ' It’s in a loose gear right now — the best players switch gears so they can’t be read.' }
+      : { widen: -0.03, loose: false, note: ' It’s in a tight gear right now — the best players switch gears so they can’t be read.' };
+  }
+  // How good a moment this is to bluff, and why: a multiplier on the bot's bluffing, plus the reasons.
+  function bluffMoment(g, i) {
+    const p = g.players[i];
+    if (!isAdaptive(p)) return { x: 1, why: [] };
+    const opp = g.players.filter((q, j) => j !== i && !q.folded);
+    const why = []; let x = 1;
+    const callers = opp.filter(q => q.style === 'station' || q.style === 'fish');
+    if (callers.length) return { x: 0.15, why: ['it won’t bluff ' + (callers.length === 1 ? callers[0].name + ', a player who calls too much' : 'players who call too much')] };
+    if (opp.length && opp.every(q => q.style === 'nit' || q.style === 'weaktight')) { x *= 2.2; why.push((opp.length === 1 ? opp[0].name + ' folds' : 'they fold') + ' too easily when someone bets'); }
+    if (opp.length === 1) { x *= 1.3; why.push('only one opponent to get past'); } else if (opp.length >= 3) { x *= 0.3; }
+    const order = []; for (let k = 1; k <= g.players.length; k++) order.push((g.button + k) % g.players.length);
+    const live = order.filter(j => !g.players[j].folded);
+    if (live[live.length - 1] === i) { x *= 1.3; why.push('it acts last, so it saw them check'); }
+    if (g.street >= 2) {
+      const c = g.board[g.board.length - 1], before = g.board.slice(0, -1);
+      const suits = {}; g.board.forEach(b => { suits[b.s] = (suits[b.s] || 0) + 1; });
+      if (c.r >= 13 && before.every(b => b.r < c.r)) { x *= 1.8; why.push('the ' + (c.r === 14 ? 'Ace' : 'King') + ' that just came is a scary card it can claim to have'); }
+      else if (suits[c.s] === 3) { x *= 1.6; why.push('the last card put three of a suit on the board, so it can represent a flush'); }
+    }
+    return { x, why };
+  }
   function botPreflop(g, i, rng) {
     const p = g.players[i], S = STYLES[p.style], k = cls(p.cards[0], p.cards[1]), P = pct()[k], pos = posOf(g, i), L = legal(g, i);
-    const light = rng() < 0.07 && S.bluff >= 0.15;                // the occasional light play from the loose, aggressive styles
+    const hw = handWords(k) + ' (' + k + ')', st = styleName(p.style), gear = gearOf(g, i), widen = S.widen + gear.widen;
+    const light = rng() < 0.07 && (S.bluff >= 0.15 || gear.loose);   // the occasional light play from the loose, aggressive styles
     // Tournament short stacks play push/fold from the equilibrium tables. Loose styles shove as if
     // shorter (wider), nits as if deeper; calling stations and maniacs call on chips alone, the
     // others respect ICM — so there is something to exploit either way.
     const sp = shortSpot(g, i);
     if (sp && sp.type === 'shove') {
-      const lean = S.widen >= 0.12 ? 1.35 : S.widen < 0 ? 0.75 : 1;
-      return PushFold.inPush(k, Math.max(1, sp.m), sp.S / lean) ? { type: 'raise', to: p.bet + p.stack } : { type: 'fold' };
+      const lean = S.widen >= 0.12 ? 1.35 : S.widen < 0 ? 0.75 : 1, go = PushFold.inPush(k, Math.max(1, sp.m), sp.S / lean);
+      return why(go ? { type: 'raise', to: p.bet + p.stack } : { type: 'fold' }, 'Short stack: ' + r1(sp.S) + ' big blinds, so it’s all-in or fold. ' + hw
+        + (go ? ' is in the all-in range from this seat, with ' + sp.m + ' player' + (sp.m === 1 ? '' : 's') + ' still to act.' : ' is not in the all-in range from this seat, so it folds.')
+        + (lean > 1 ? ' As a loose player it shoves more hands than the chart says.' : lean < 1 ? ' As a tight player it shoves fewer hands than the chart says.' : ''));
     }
     if (sp && sp.type === 'call') {
       const tb = pfTable(g, i, []);
       const r = PushFold.callSpot(tb.t, k, tb.seats.indexOf(sp.pusher), Math.max(1, sp.mp));
-      const need = (S.call >= 0.15 ? r.needChips : r.needIcm) - S.sticky;
-      return r.eq >= need ? { type: 'call' } : { type: 'fold' };
+      const need = (S.call >= 0.15 ? r.needChips : r.needIcm) - S.sticky, ok = r.eq >= need;
+      return why(ok ? { type: 'call' } : { type: 'fold' }, 'Facing an all-in. Against the hands that player shoves, ' + hw + ' wins about ' + pctW(r.eq) + ' of the time; it needs ' + pctW(need)
+        + (S.call >= 0.15 ? ' (it only counts chips and ignores the prize-money risk — a loose caller)' : ' (counting the prize-money risk)') + '. ' + (ok ? 'Enough, so it calls.' : 'Not enough, so it folds.'));
     }
     if (g.raises === 0) {
-      if (L.toCall === 0) return P <= 0.08 ? sized(g, i, 4) : { type: 'check' };   // big blind vs a limp
+      if (L.toCall === 0) return P <= 0.08 ? why(sized(g, i, 4), 'Nobody raised, only called, and ' + hw + ' is one of the best ' + pctW(P) + ' of hands — it raises to make the callers pay.')
+        : why({ type: 'check' }, 'It’s the big blind and nobody raised, so it sees the flop for free with ' + hw + '.');   // big blind vs a limp
       const w = chartWidth('rfi.' + pos);
-      const open = S.widen < 0 ? P <= w + S.widen : (chart('rfi.' + pos).has(k) || P <= w + S.widen);
-      if (S.limp && rng() < S.limp && (open ? rng() < 0.8 : P <= 0.7)) return { type: 'call' };   // mostly just calls, even with good hands
-      return (open || light) ? sized(g, i, openTo(g, i)) : { type: 'fold' };
+      const open = widen < 0 ? P <= w + widen : (chart('rfi.' + pos).has(k) || P <= w + widen);
+      const top = hw + ' is ' + (P <= 0.5 ? 'one of the best ' + pctW(P) + ' of hands' : strengthWord(P) + ' (ranked #' + (PK_HAND_ORDER.indexOf(k) + 1) + ' of 169)') + '; from the ' + (POS_FULL[pos] || pos) + ' seat, good players raise the best ' + pctW(w) + '.';
+      if (S.limp && rng() < S.limp && (open ? rng() < 0.8 : P <= 0.7)) return why({ type: 'call' }, 'It just calls (limps) instead of raising — typical of a ' + st + ' player. ' + top + ' Limping is a leak: it wins nothing straight away and lets everyone in cheaply.');   // mostly just calls, even with good hands
+      if (open) return why(sized(g, i, openTo(g, i)), 'Everyone folded to it. ' + top + (chart('rfi.' + pos).has(k) || P <= w ? ' So it raises.' : ' A ' + st + ' player raises more hands than that, and this one is in its wider range.') + gear.note);
+      if (light) return why(sized(g, i, openTo(g, i)), 'A bluff raise. ' + top + (gear.loose ? gear.note : ' Loose, aggressive players mix in some weak hands to steal the blinds.'));
+      return why({ type: 'fold' }, 'Everyone folded to it. ' + top + ' Not good enough, so it folds.' + gear.note);
     }
     if (g.raises === 1) {
       const grp = /^(CO|BTN|SB)$/.test(posOf(g, g.openerSeat)) ? 'Late' : 'Early';
-      const who = pos === 'BB' ? 'bb' : pos === 'SB' ? 'sb' : 'ip';
-      if (chart(who + '3' + grp).has(k) || P <= S.widen * 0.25 || light) return sized(g, i, threeBetTo(g, i));
+      const who = pos === 'BB' ? 'bb' : pos === 'SB' ? 'sb' : 'ip', opener = POS_FULL[posOf(g, g.openerSeat)] || 'raiser';
+      const three = chart(who + '3' + grp).has(k);
+      if (three || P <= S.widen * 0.25 || light) return why(sized(g, i, threeBetTo(g, i)), three ? hw + ' is strong enough to re-raise (3-bet) a raise from the ' + opener + '.'
+        : 'A light re-raise (3-bet) with ' + hw + ' — ' + (light ? 'a bluff, to make the ' + opener + ' fold.' : 'a ' + st + ' player re-raises far more hands than the chart.'));
       const cs = who === 'sb' ? null : chart(who + 'Call' + grp);
       const call = S.call < 0 ? !!(cs && cs.has(k) && P <= 0.14) : (!!(cs && cs.has(k)) || P <= S.call + (who === 'bb' ? 0.12 : 0));
-      return call ? { type: 'call' } : { type: 'fold' };
+      if (call) return why({ type: 'call' }, 'Calls the ' + opener + '’s raise: ' + hw + (cs && cs.has(k) ? ' plays well enough after the flop to call, but isn’t strong enough to re-raise.' : ' isn’t really good enough, but a ' + st + ' player calls too often.')
+        + (who === 'bb' ? ' In the big blind it already has 1 big blind in, so calling costs less.' : ''));
+      return why({ type: 'fold' }, 'Folds to the ' + opener + '’s raise: ' + hw + ' isn’t strong enough' + (grp === 'Early' ? ' — a raise from an early seat usually means a strong hand.' : '.'));
     }
     if (g.raises === 2) {
       const opened = g.openerSeat === i;
-      if (chart(opened ? 'vs3bet4' : 'cold4').has(k) || (S.widen >= 0.3 && P <= 0.05)) return sized(g, i, g.curBet * 2.3);
-      if (chart(opened ? 'vs3betCall' : 'coldCall').has(k) || P <= S.call * 0.3) return { type: 'call' };
-      return { type: 'fold' };
+      if (chart(opened ? 'vs3bet4' : 'cold4').has(k) || (S.widen >= 0.3 && P <= 0.05)) return why(sized(g, i, g.curBet * 2.3), 'Raises again (a 4-bet) with ' + hw + ' — after a raise and a re-raise, only the very best hands keep raising.');
+      if (chart(opened ? 'vs3betCall' : 'coldCall').has(k) || P <= S.call * 0.3) return why({ type: 'call' }, 'Calls the re-raise with ' + hw + ' — good enough to continue, not to raise again.');
+      return why({ type: 'fold' }, 'Folds to the re-raise: ' + hw + ' isn’t strong enough after two raises.');
     }
-    if (L.toCall >= p.stack || g.curBet >= 0.5 * (p.bet + p.stack)) return (chart('callJam').has(k) || P <= S.widen * 0.12) ? { type: 'call' } : { type: 'fold' };
-    if (chart('jam4').has(k)) return { type: 'raise', to: p.bet + p.stack };
-    if (chart('call4').has(k)) return { type: 'call' };
-    return { type: 'fold' };
+    if (L.toCall >= p.stack || g.curBet >= 0.5 * (p.bet + p.stack)) return (chart('callJam').has(k) || P <= S.widen * 0.12) ? why({ type: 'call' }, 'Calls for most of its chips with ' + hw + ' — one of the few hands strong enough.') : why({ type: 'fold' }, 'Folds: ' + hw + ' isn’t strong enough to risk most of its chips after so many raises.');
+    if (chart('jam4').has(k)) return why({ type: 'raise', to: p.bet + p.stack }, 'Goes all-in with ' + hw + ' — a top hand.');
+    if (chart('call4').has(k)) return why({ type: 'call' }, 'Calls with ' + hw + ' — strong, but not strong enough to go all-in.');
+    return why({ type: 'fold' }, 'Folds ' + hw + ' — after three raises only the very best hands continue.');
   }
   function botPostflop(g, i, rng) {
     const p = g.players[i], S = STYLES[p.style], L = legal(g, i);
@@ -547,18 +617,32 @@ const Trainer = (() => {
     const n = opps.length, vt = n === 1 ? 0.58 : n === 2 ? 0.44 : 0.36;
     const d = draws(p.cards, g.board), drawy = (d.flush || d.straight) && g.street < 3;
     const trap = S.slowplay && e >= 0.8 && g.street < 3 && rng() < S.slowplay;
+    const bm = bluffMoment(g, i), adapt = isAdaptive(p);
+    const others = g.players.filter((q, j) => j !== i && !q.folded);
+    const vsCallers = adapt && others.some(q => q.style === 'station' || q.style === 'fish');
+    const vsManiac = adapt && others.some(q => q.style === 'maniac');
+    const vtE = vt - (vsCallers ? 0.08 : 0);                                       // thinner value against players who call too much
+    const made = madeHand(p.cards, g.board), E = Math.round(e * 100) + '%', st = styleName(p.style), them = n === 1 ? 'the other player probably holds' : 'the other ' + n + ' players probably hold';
+    const odds = 'it reckons it wins about ' + E + ' against what ' + them + (drawy ? ', counting its draw' : '');
     if (L.toCall === 0) {
-      if (trap) return { type: 'check' };
-      if (e >= vt && rng() < S.aggr) return sized(g, i, Math.max(1, L.pot * (e > 0.8 ? 0.75 : 0.5) * (S.widen >= 0.3 ? 1.4 : 1)));
-      if (rng() < S.bluff * (drawy ? 2.2 : 1) * (n === 1 ? 1 : 0.4)) return sized(g, i, Math.max(1, L.pot * 0.5));
-      return { type: 'check' };
+      if (trap) return why({ type: 'check' }, 'Checks with ' + made + ' — very strong (' + odds + '), so it slow-plays: a ' + st + ' player hopes someone bets into it.');
+      if (e >= vtE && rng() < S.aggr) return why(sized(g, i, Math.max(1, L.pot * (e > 0.8 ? 0.75 : 0.5) * (S.widen >= 0.3 ? 1.4 : 1))), 'Bets for value with ' + made + ': ' + odds + ' — ahead often enough to want to be called.'
+        + (e > 0.8 ? ' Very strong, so a bigger bet.' : '') + (S.widen >= 0.3 ? ' Maniacs bet extra big.' : '')
+        + (vsCallers && e < vt ? ' This is a thin value bet: a good player bets weaker hands against someone who calls too much, because worse hands will pay.' : ''));
+      if (rng() < S.bluff * bm.x * (drawy ? 2.2 : 1) * (n === 1 ? 1 : 0.4)) return why(sized(g, i, Math.max(1, L.pot * 0.5)), (drawy ? 'A semi-bluff: ' : 'A bluff: ') + 'only ' + made + ', and ' + odds + '.'
+        + (drawy ? ' It bets to win the pot now, and can still hit its draw if called.' : ' It bets hoping better hands fold') + (drawy ? '' : (bm.why.length ? '.' : S.bluff >= 0.2 ? ' — a ' + st + ' player bluffs often.' : '.'))
+        + (bm.why.length ? ' A well-chosen moment: ' + bm.why.join('; ') + '.' : ''));
+      return why({ type: 'check' }, 'Checks with ' + made + ': ' + odds + ' — not enough to bet' + (n > 1 ? ' into ' + n + ' players' : '') + '.'
+        + (adapt && bm.x < 0.5 && bm.why.length ? ' And it won’t bluff here: ' + bm.why[0] + '.' : ''));
     }
     const need = L.toCall / (L.pot + L.toCall);
-    if (trap) return { type: 'call' };
-    if (L.canRaise && e >= (n === 1 ? 0.72 : 0.62) && rng() < S.aggr * 0.7) return sized(g, i, g.curBet * 2.8);
-    if (L.canRaise && drawy && rng() < S.bluff * 0.5) return sized(g, i, g.curBet * 2.8);
-    if (e + S.sticky + (drawy ? 0.04 : 0) >= need + (S.foldToAggr || 0)) return { type: 'call' };
-    return { type: 'fold' };
+    const price = 'to call it must win at least ' + pctW(need) + ' of the time (' + bbs(r2(L.toCall)) + ' to win a pot of ' + bbs(r2(L.pot + L.toCall)) + '), and ' + odds;
+    if (trap) return why({ type: 'call' }, 'Just calls with ' + made + ' to trap — slow-playing a very strong hand (' + odds + ').');
+    if (L.canRaise && e >= (n === 1 ? 0.72 : 0.62) && rng() < S.aggr * 0.7) return why(sized(g, i, g.curBet * 2.8), 'Raises with ' + made + ': ' + odds + ' — strong enough to build a bigger pot.');
+    if (L.canRaise && drawy && rng() < S.bluff * 0.5 * Math.min(bm.x, 1.5)) return why(sized(g, i, g.curBet * 2.8), 'Raises as a semi-bluff: only ' + made + ' now, but it has a draw — it may win the pot at once, and can still improve if called.');
+    if (e + S.sticky + (vsManiac ? 0.08 : 0) + (drawy ? 0.04 : 0) >= need + (S.foldToAggr || 0)) return why({ type: 'call' }, 'Calls with ' + made + ': ' + price + '.'
+      + (e < need && vsManiac ? ' Not quite enough on paper, but a maniac bets with nothing so often that a good player calls it down lighter.' : e < need ? ' That’s not really enough — a ' + st + ' player calls too much.' : ''));
+    return why({ type: 'fold' }, 'Folds ' + made + ': ' + price + ' — not enough.' + (S.foldToAggr ? ' A ' + st + ' player gives up easily when someone bets.' : ''));
   }
   function randomPlay(g, i, rng) {
     const L = legal(g, i), r = rng();
@@ -569,7 +653,7 @@ const Trainer = (() => {
   }
   const botDecide = (g, i, rng) => {
     const lv = SKILL[g.players[i].level];
-    if (lv && lv.err && rng() < lv.err) return randomPlay(g, i, rng);
+    if (lv && lv.err && rng() < lv.err) return why(randomPlay(g, i, rng), 'A mistake: ' + g.players[i].name + ' is a ' + lv.name + ' player and plays more or less at random about ' + Math.round(lv.err * 100) + '% of the time — this was one of those. Real players at this level do the same.');
     return g.street === 0 ? botPreflop(g, i, rng) : botPostflop(g, i, rng);
   };
 
@@ -1067,6 +1151,35 @@ const Trainer = (() => {
     broadcast();
     step();
   }
+  // One bot action, with its reason kept for watching (g.watchLog).
+  function botMove() {
+    const i = g.toAct, st = g.street, d = botDecide(g, i, Math.random);
+    act(g, i, d);
+    const last = g.log.filter(l => l.i === i && l.kind !== 'post').pop();
+    (g.watchLog || (g.watchLog = [])).push({ i, st, at: g.acts.length - 1, txt: last ? last.txt : d.type, why: d.why || '' });
+  }
+  // You folded (solo): the rest of the hand plays one action per Next, the bots' cards face up and each
+  // move explained. Fast-fold, when on, skips it as before.
+  const watchOn = () => !room && opts.watch !== false && g && me >= 0 && g.players[me] && g.players[me].folded && !g.players[me].out;
+  const watching = () => watchOn() && !g.over && !fastFolding();
+  function watchPlay(all) {
+    let guard = 0;
+    do { if (!g || g.over || isHuman(g.players[g.toAct])) break; try { botMove(); } catch (e) { console.error('trainer bot', e); break; } } while (all && guard++ < 300);
+    step();
+  }
+  function watchHtml() {
+    if (!watchOn()) return '';
+    const fold = g.acts.findIndex(a => a[0] === me && a[1] === 'fold');
+    const line = w => { const p = g.players[w.i]; return '<div class="tr-why"><b class="tr-lbl">' + esc(plain(p.name + ' (' + posOf(g, w.i) + ') ' + w.txt)) + '</b> <span class="tr-dim">' + esc(cardsTxt(p.cards) + ' · ' + botLabel(p)) + '</span>\n' + esc(plain(w.why))
+      + (STYLE_HOW[p.style] ? '\n<i class="tr-dim">How a ' + esc(styleName(p.style)) + ' player plays: ' + esc(STYLE_HOW[p.style]) + '</i>' : '') + '</div>'; };
+    const log = g.watchLog || [], after = log.filter(w => w.at > fold), before = log.filter(w => w.at < fold);
+    const latest = after[after.length - 1], earlier = after.slice(0, -1);
+    return '<div class="tr-explain tr-narrate"><b>👀 You folded — watch how the bots play it out</b>'
+      + (latest ? line(latest) : '<div class="tr-why">Their cards are face up now. Press <b>Next ▶</b> to see each move and why they make it.</div>')
+      + (earlier.length ? '<details><summary>Earlier moves since you folded (' + earlier.length + ')</summary>' + earlier.map(line).join('') + '</details>' : '')
+      + (before.length ? '<details><summary>Why they played as they did before you folded (' + before.length + ')</summary>' + before.map(line).join('') + '</details>' : '')
+      + '</div>';
+  }
   // Bots act on the host (or solo). A person's turn waits for them.
   function step() {
     if (tab === 'play') renderPlay(); else renderSpot();
@@ -1074,9 +1187,10 @@ const Trainer = (() => {
     if (g.over) { if (!g._done) handEnd(); return; }
     if (isHuman(g.players[g.toAct])) return;
     if (holding()) return;                                        // waiting for me to press Continue
+    if (watching()) return;                                       // you folded: each move waits for Next
     if (fastFolding()) {                                          // you've left this hand: the rest plays out at once
       let guard = 0;
-      while (!g.over && guard++ < 300) { try { act(g, g.toAct, botDecide(g, g.toAct, Math.random)); } catch (e) { break; } }
+      while (!g.over && guard++ < 300) { try { botMove(); } catch (e) { break; } }
       return step();
     }
     const tok = ++token, fast = g.players.every(p => !isHuman(p) || p.folded);
@@ -1086,7 +1200,7 @@ const Trainer = (() => {
       // must go on for everyone, so it never pauses.
       if (tok !== token || !g || g.over || isHuman(g.players[g.toAct]) || holding()) return;
       if (!room && (!shown || tab !== 'play')) return;
-      try { act(g, g.toAct, botDecide(g, g.toAct, Math.random)); } catch (e) { console.error('trainer bot', e); return; }
+      try { botMove(); } catch (e) { console.error('trainer bot', e); return; }
       broadcast();
       step();
     }, fast ? BOT_MS_FAST : BOT_MS);
@@ -1662,7 +1776,7 @@ const Trainer = (() => {
         + '<span class="stk">Out — ' + ordinal(T.place[i]) + (T.prize[i] ? ' · $' + T.prize[i] : '') + '</span></div></div>';
     }
     const won = g.over && g.result && g.result.wins.find(w => w.i === i);
-    const show = mine || (room ? (room.faceUp || g.over) : (opts.showBots || (g.over && g.result.showdown && !p.folded)));
+    const show = mine || (room ? (room.faceUp || g.over) : (opts.showBots || watchOn() || (g.over && g.result.showdown && !p.folded)));
     const folded = p.folded && !(room && g.over);
     const cards = folded || !p.cards ? (p.folded ? '' : backHtml(mine ? 'lg' : '') + backHtml(mine ? 'lg' : ''))
       : p.cards.map(c => show ? cardHtml(c, mine ? 'lg' : '') : backHtml(mine ? 'lg' : '')).join('');
@@ -1753,6 +1867,8 @@ const Trainer = (() => {
       actions = (isGuest() ? '<span class="tr-wait">Waiting for the host to deal the next hand…</span>' : '<button class="primary" data-act="play:next">Next hand ▶</button>') + extras;
     } else if (holding()) {
       actions = '<span class="tr-wait">Read the explanation above, then press Continue.</span>';
+    } else if (watching()) {
+      actions = '<button class="primary" data-act="play:wnext">Next ▶</button><button class="ghost" data-act="play:wall">Play the hand out ▶▶</button><span class="tr-dim">' + esc(g.players[g.toAct].name) + ' is next to act.</span>';
     } else if (me < 0) actions = '<span class="tr-wait">Watching — you’re dealt in from the next ' + (T ? 'game' : 'hand') + '.</span>';
     else if (T && g.players[me].out) actions = '<span class="tr-wait">You’re out in ' + ordinal(T.place[me]) + ' — the rest plays on.</span>' + (isGuest() ? '' : '<button class="ghost" data-act="tour:menu">Leave this tournament</button>');
     else if (g.toAct !== me) actions = '<span class="tr-wait">' + (g.toAct >= 0 ? esc(g.players[g.toAct].name) + ' is thinking…' : 'Sending…') + '</span>';
@@ -1771,13 +1887,14 @@ const Trainer = (() => {
       + '<label><input type="checkbox" data-opt="detail"' + (opts.detail ? ' checked' : '') + ' /> 📊 Detailed explanations (stat tables)</label>'
       + '<label><input type="checkbox" data-opt="pause"' + (pauseOn() ? ' checked' : '') + ' /> Explain after I act' + (room ? '' : ' (and pause)') + '</label>'
       + (room ? '' : '<label><input type="checkbox" data-opt="showBots"' + (opts.showBots ? ' checked' : '') + ' /> Show the bots’ cards</label>')
+      + (room ? '' : '<label title="When you fold, the hand carries on one move at a time with the bots’ cards face up and each move explained."><input type="checkbox" data-opt="watch"' + (opts.watch !== false ? ' checked' : '') + ' /> 👀 Watch the bots after I fold</label>')
       + (room || T ? '' : '<label title="Like PokerStars Zoom: when you fold, the rest of the hand plays out at once and you’re dealt the next one — many more hands per hour."><input type="checkbox" data-opt="fastFold"' + (opts.fastFold ? ' checked' : '') + ' /> ⚡ Fast-fold</label>');
     const advice = opts.advise && !holding() && !g.over && g.toAct === me ? adviceHtml() : '';
     m.innerHTML = roomBar() + tourBar() + ratingsBar() + '<div class="tr-felt-wrap"><div class="tr-felt">' + felt + '</div></div>'
       + '<div class="tr-actions">' + actions + '</div>'
       + '<div class="tr-key">Key: ' + Array.from(new Set(g.players.map((q, j) => posOf(g, j)).filter(Boolean))).map(p => '<b>' + p + '</b> ' + POS_FULL[p] + (p === 'BTN' ? ' (the dealer)' : p === 'UTG' ? ' (first to act)' : '')).join(' · ') + ' · <b>bb</b> big blinds · <b>D</b> dealer button</div>'
       + '<div class="tr-opts">' + optsRow + '<span>Hand #' + g.handNo + (T ? '' : ' · your session ' + (stats.net >= 0 ? '+' : '') + bbs(stats.net)) + '</span></div>';
-    setPanel(panel + advice);
+    setPanel(panel + advice + watchHtml());
     renderSpot();
   }
   function renderSpot() {
@@ -2523,6 +2640,7 @@ const Trainer = (() => {
       if (v === 'continue') { const p = myPending(); if (p) ackId = p.id; if (g && g.over && fastFolding()) return startHand(); renderPlay(); if (!isGuest()) step(); return; }
       if (v === 'next') { const p = myPending(); if (p) ackId = p.id; if (g && g.tour && g.tour.done) freshTable(); return startHand(); }
       if (v === 'hint') return hint();
+      if (v === 'wnext' || v === 'wall') return watchPlay(v === 'wall');
       if (v === 'ai') return askAI(b);
       if (v === 'copy') { try { navigator.clipboard.writeText(historyText(g, decisions)); toast('Hand history copied', 'green'); } catch (e) {} return; }
       if (v === 'raise') return heroAct('raise', parseFloat(b.dataset.to));
@@ -2617,6 +2735,7 @@ const Trainer = (() => {
       if (b.dataset.opt === 'showBots') renderPlay();
       if (b.dataset.opt === 'pause' && !b.checked && g && !g.over) step();     // un-pausing lets the bots carry on
       if (b.dataset.opt === 'advise' || b.dataset.opt === 'pause' || b.dataset.opt === 'detail') renderPlay();
+      if (b.dataset.opt === 'watch') { renderPlay(); step(); }
     };
     $('trMain').onkeydown = (e) => {
       if (e.key !== 'Enter') return;
@@ -2629,7 +2748,7 @@ const Trainer = (() => {
 
   return {
     wire, open, close,
-    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS },
+    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf },
   };
 })();
 
