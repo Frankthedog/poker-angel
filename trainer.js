@@ -796,6 +796,8 @@ const Trainer = (() => {
       })
       .replace(/(?<![\w])([2-9TJQKA])([2-9TJQKA])([so])?(\+)?(?![\w])/g, (m, a, b, sfx, plus, at, str) => {
         if (a !== b && !sfx && !/[AKQJT]/.test(a)) return m;          // not a hand code (e.g. "52")
+        if (!sfx && /^\d\d$/.test(a + b)) return m;                    // "33", "22": a number, not a pair, unless written 33s/33o
+        if (/[.\d%]/.test(str[at + m.length] || '') || /[.\d]/.test(str[at - 1] || '')) return m;   // part of a number like 33.3%
         const k0 = a + b + (sfx || '');
         if (str[at - 1] === '(' && str.slice(0, at - 1).trimEnd().endsWith(handWords(k0))) return m;        // already spelled out
         if (str[at - 1] === '(') return m;                                                                  // "(A2o, …)" after the cards: the words follow elsewhere
@@ -1155,10 +1157,10 @@ const Trainer = (() => {
     const d = rec.dec.find(x => x.at === R.step - 1);
     const what = last ? who(last.i) + ' (' + last.pos + ') ' + last.txt : 'The deal: blinds posted, cards dealt.';
     const end = rg.over && R.step >= total ? '\n' + rg.result.wins.map(w => who(w.i) + ' win' + (w.i === rec.me ? '' : 's') + ' ' + bbs(r2(w.amt)) + (w.name ? ' — ' + w.name : '')).join('\n') : '';
+    setPanel('<div class="tr-explain tr-narrate"><b>' + esc(plain(what)) + '</b>' + (end ? '<div class="tr-why">' + esc(plain(end)) + '</div>' : '')
+      + (d ? '<div class="tr-why"><b class="tr-lbl">' + esc(plain(who(d.seat) + ' chose: ' + (d.verb || d.kind) + ' · ' + d.G.head)) + '</b>\n' + fmtWhy(d.G.why) + '</div>' : '') + '</div>');
     m.innerHTML = '<div class="tr-replay-head"><button class="ghost" data-act="hist:close">← All hands</button><b>Replay · hand #' + rec.handNo + '</b><span class="tr-dim">Step ' + R.step + ' of ' + total + ' · every card is shown</span></div>'
       + '<div class="tr-felt-wrap"><div class="tr-felt">' + felt + '</div></div>'
-      + '<div class="tr-explain"><b>' + esc(plain(what)) + '</b>' + (end ? '<div class="tr-why">' + esc(plain(end)) + '</div>' : '')
-      + (d ? '<div class="tr-why"><b class="tr-lbl">' + esc(plain(who(d.seat) + ' chose: ' + (d.verb || d.kind) + ' · ' + d.G.head)) + '</b>\n' + fmtWhy(d.G.why) + '</div>' : '') + '</div>'
       + '<div class="tr-actions"><button class="ghost" data-act="hist:first"' + (R.step ? '' : ' disabled') + '>⏮ Start</button><button class="ghost" data-act="hist:prev"' + (R.step ? '' : ' disabled') + '>◀ Back</button>'
       + '<button class="primary" data-act="hist:next"' + (R.step < total ? '' : ' disabled') + '>Next ▶</button><button class="ghost" data-act="hist:last"' + (R.step < total ? '' : ' disabled') + '>End ⏭</button></div>';
   }
@@ -1551,6 +1553,8 @@ const Trainer = (() => {
       + '<div class="tr-plate"><b>' + esc(mine && room ? 'You' : p.name) + '</b><span class="pos">' + posOf(g, i) + '</span><span class="stk">' + bbs(r2(p.stack)) + (p.allin && !g.over ? ' · all-in' : '') + '</span>'
       + chips + tag + '</div>' + bubble + '</div>';
   }
+  // What to read beside the table (explanation, advice, lesson notes) goes in the right-hand column.
+  function setPanel(html) { const el = $('trPanel'); if (el) el.innerHTML = html || ''; }
   function feltHtml() {
     const pot = potTotal(g), betting = g.players.reduce((a, p) => a + p.bet, 0);
     let felt = '';
@@ -1592,6 +1596,7 @@ const Trainer = (() => {
   }
   function renderPlay() {
     const m = $('trMain');
+    setPanel('');
     if (!g) {
       if (room) {
         m.innerHTML = roomBar() + '<div class="tr-drill"><div class="tr-q">' + (isHost()
@@ -1644,10 +1649,10 @@ const Trainer = (() => {
       + (room || T ? '' : '<label title="Like PokerStars Zoom: when you fold, the rest of the hand plays out at once and you’re dealt the next one — many more hands per hour."><input type="checkbox" data-opt="fastFold"' + (opts.fastFold ? ' checked' : '') + ' /> ⚡ Fast-fold</label>');
     const advice = opts.advise && !holding() && !g.over && g.toAct === me ? adviceHtml() : '';
     m.innerHTML = roomBar() + tourBar() + ratingsBar() + '<div class="tr-felt-wrap"><div class="tr-felt">' + felt + '</div></div>'
-      + panel + advice
       + '<div class="tr-actions">' + actions + '</div>'
       + '<div class="tr-key">Key: ' + Array.from(new Set(g.players.map((q, j) => posOf(g, j)).filter(Boolean))).map(p => '<b>' + p + '</b> ' + POS_FULL[p] + (p === 'BTN' ? ' (the dealer)' : p === 'UTG' ? ' (first to act)' : '')).join(' · ') + ' · <b>bb</b> big blinds · <b>D</b> dealer button</div>'
       + '<div class="tr-opts">' + optsRow + '<span>Hand #' + g.handNo + (T ? '' : ' · your session ' + (stats.net >= 0 ? '+' : '') + bbs(stats.net)) + '</span></div>';
+    setPanel(panel + advice);
     renderSpot();
   }
   function renderSpot() {
@@ -2305,9 +2310,8 @@ const Trainer = (() => {
     m.innerHTML = '<div class="tr-replay-head"><button class="ghost" data-act="ex:close">← Lessons</button><b>Example hand · ' + esc(X.sc.title) + '</b>'
       + (list.length > 1 ? '<span class="tr-dim">' + (X.si + 1) + ' of ' + list.length + '</span>' : '') + '</div>'
       + '<div class="tr-felt-wrap"><div class="tr-felt">' + felt + '</div></div>'
-      + fb
-      + '<div class="tr-explain tr-narrate"><b>' + esc(plain(last)) + '</b>' + (earlier.length ? '<details><summary>What happened so far</summary><div class="tr-why">' + esc(plain(earlier.join('\n'))) + '</div></details>' : '') + end + '</div>'
       + controls;
+    setPanel('<div class="tr-explain tr-narrate"><b>' + esc(plain(last)) + '</b>' + (earlier.length ? '<details><summary>What happened so far</summary><div class="tr-why">' + esc(plain(earlier.join('\n'))) + '</div></details>' : '') + end + '</div>' + fb);
   }
 
   function renderLearn() {
@@ -2379,6 +2383,7 @@ const Trainer = (() => {
   function renderTabs() { $('trTabs').innerHTML = TABS.map(t => '<button class="ghost' + (t[0] === tab ? ' on' : '') + '" data-tab="' + t[0] + '">' + t[1] + '</button>').join(''); }
   function renderMain() {
     if (!shown) return;
+    setPanel('');
     ({ play: renderPlay, learn: renderLearn, hands: renderHands, pf: renderPf, icm: renderIcm, pre: renderPre, odds: renderOdds, eq: renderEq, outs: renderOuts, sd: renderSd, charts: renderCharts, stats: renderStats }[tab] || renderPlay)();
     if (tab !== 'play') renderSpot();
   }
@@ -2495,7 +2500,7 @@ const Trainer = (() => {
 
   return {
     wire, open, close,
-    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind },
+    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain },
   };
 })();
 

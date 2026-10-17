@@ -56,7 +56,12 @@
   .tr-tabs button.on{background:linear-gradient(180deg,#4f8ff7,#2563eb);color:#fff;box-shadow:0 4px 12px -6px rgba(37,99,235,.9)}
   .tr-body{flex:1;min-height:0;display:flex}
   #trMain{flex:1;min-width:0;overflow:auto;padding:14px 22px 22px;display:flex;flex-direction:column;gap:14px}
-  #trSide{width:350px;flex:0 0 350px;border-left:1px solid #1c2942;display:flex;flex-direction:column;min-height:0;background:#0b1426}
+  #trSide{width:390px;flex:0 0 390px;border-left:1px solid #1c2942;display:flex;flex-direction:column;min-height:0;background:#0b1426}
+  #trPanel{flex:0 1 auto;max-height:62%;overflow:auto;padding:10px;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid #1c2942}
+  #trPanel:empty{display:none}
+  #trPanel .tr-explain, #trPanel .tr-advice{font-size:13px;padding:12px 13px}
+  #trPanel .tr-opt b{min-width:0}
+  #trPanel .tr-opt span{min-width:0}
   #trSpot{padding:12px 14px;border-bottom:1px solid #1c2942;font-size:12px;color:#9fb3cf;line-height:1.6}
   #trSpot b{color:#e2e8f0}
   #trFeed{flex:1;overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
@@ -65,8 +70,10 @@
   .tr-msg.good{border-left-color:#22c55e}.tr-msg.ok{border-left-color:#eab308}.tr-msg.bad{border-left-color:#ef4444}
   .tr-msg b{display:block;font-size:12.5px;margin-bottom:2px;color:#e2e8f0}
   .tr-msg small{display:block;color:#6b7f9c;font-size:10.5px;margin-top:4px}
-  .tr-felt-wrap{padding:52px 92px 70px}
-  .tr-felt{position:relative;width:100%;max-width:900px;margin:0 auto;aspect-ratio:2.05/1;border-radius:999px;
+  .tr-felt-wrap{padding:84px 92px 88px}
+  /* the table fits the window: as wide as there is room for, but never taller than the space left once the
+     header, the seats around it and the action buttons are counted (about 400px) */
+  .tr-felt{position:relative;width:min(100%, 860px, calc((100vh - 480px) * 2.05));min-width:min(100%, 520px);margin:0 auto;aspect-ratio:2.05/1;border-radius:999px;
     background:radial-gradient(ellipse at 50% 40%,#1f7a4d,#0f4d30 70%,#0b3b25);border:14px solid #4a2f1b;
     box-shadow:inset 0 0 0 3px #6b4426,inset 0 10px 40px rgba(0,0,0,.45),0 20px 50px -20px #000}
   .tr-seat{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:3px;z-index:2;min-width:120px}
@@ -80,10 +87,10 @@
   .tr-seat.win .tr-plate{border-color:#22c55e;box-shadow:0 0 0 2px #22c55e66,0 0 20px #22c55e66}
   .tr-bubble{font-size:11px;background:#e2e8f0;color:#0f172a;border-radius:8px;padding:2px 8px;font-weight:700;white-space:nowrap}
   .tr-bubble.win{background:#22c55e;color:#04210f}
-  .tr-cards{display:flex;gap:3px;min-height:46px;align-items:flex-end}
-  .tc{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;width:34px;height:46px;border-radius:5px;background:#f8fafc;color:#0f172a;font-weight:800;box-shadow:0 2px 6px rgba(0,0,0,.5);line-height:1;border:1px solid #cbd5e1;flex:0 0 auto}
-  .tc b{font-size:16px}.tc i{font-style:normal;font-size:15px}
-  .tc.lg{width:50px;height:70px}.tc.lg b{font-size:23px}.tc.lg i{font-size:21px}
+  .tr-cards{display:flex;gap:4px;min-height:60px;align-items:flex-end}
+  .tc{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;width:44px;height:60px;border-radius:5px;background:#f8fafc;color:#0f172a;font-weight:800;box-shadow:0 2px 6px rgba(0,0,0,.5);line-height:1;border:1px solid #cbd5e1;flex:0 0 auto}
+  .tc b{font-size:21px}.tc i{font-style:normal;font-size:19px}
+  .tc.lg{width:64px;height:90px;border-radius:7px}.tc.lg b{font-size:30px}.tc.lg i{font-size:27px}
   .tc.h{color:#dc2626}.tc.d{color:#2563eb}.tc.c{color:#15803d}
   .tc.back{background:repeating-linear-gradient(45deg,#1e3a8a 0 4px,#1e40af 4px 8px);border-color:#93c5fd}
   .tc.slot{background:rgba(0,0,0,.18);border:1px dashed rgba(255,255,255,.18);box-shadow:none}
@@ -249,7 +256,7 @@
   </div>
   <div class="tr-body">
     <div id="trMain"></div>
-    <div id="trSide"><div id="trSpot"></div><div id="trFeed"></div></div>
+    <div id="trSide"><div id="trPanel"></div><div id="trSpot"></div><div id="trFeed"></div></div>
   </div>
 </section>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
