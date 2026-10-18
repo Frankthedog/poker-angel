@@ -1873,8 +1873,12 @@ const Trainer = (() => {
     }, 180);
   }
   // What to read beside the table (explanation, advice, lesson notes) goes in the right-hand column.
+  // The right-hand column scrolls as one; a NEW explanation brings it back to the top so it's seen.
+  let panelLast = '';
   function setPanel(html) {
     const el = $('trPanel'); if (!el) return;
+    if (html && html !== panelLast && $('trSide')) $('trSide').scrollTop = 0;
+    panelLast = html || '';
     el.innerHTML = html ? (CAN_SPEAK ? '<div class="tr-row tr-speak"><button class="' + (opts.speak ? 'primary' : 'ghost') + ' tr-mini" data-act="ui:speaktoggle" title="Read each new explanation aloud, hand after hand, until you switch it off">' + (opts.speak ? '🔊 Read aloud: on' : '🔇 Read aloud: off') + '</button>'
       + '<button class="ghost tr-mini" data-act="ui:speak">↻ Read again</button><button class="ghost tr-mini" data-act="ui:hush" title="Stop this explanation — reading stays on for the next one">⏹ Stop</button></div>' : '') + html : '';
     if (html) autoSpeak();
