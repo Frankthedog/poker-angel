@@ -1325,6 +1325,7 @@ const Trainer = (() => {
   const handKey = () => (g.gid || '') + '#' + g.handNo;        // unique across games (a new tournament restarts at hand 1)
   function startHand() {
     if (isGuest()) return;
+    roomSync(); chatterSchedule();
     if (g && g.tour && g.tour.done) return;
     if (!g) { g = newGame(Math.random, opts.field); g.players[0].name = room ? myName() : 'You'; }
     if (room) seatJoiners();
@@ -1856,7 +1857,8 @@ const Trainer = (() => {
     if (noPeer() || room) return;
     const code = newCode();
     const peer = new Peer(PEER_PREFIX + code.toLowerCase());
-    autoStop(true); room = { role: 'host', code, peer, conns: new Map(), faceUp: true, status: 'Opening the table…' }; ratings = {};
+    autoStop(true); room = { role: 'host', code, peer, conns: new Map(), faceUp: true, status: 'Opening the table…', voices: {} }; ratings = {};
+    if (myVoice && opts.voiceConsent && HAS_TTS()) window.api.ttsClone({ name: myName(), mime: myVoice.mime, b64: myVoice.b64, hash: myVoice.hash }).then(r => { if (room && room.voices) room.voices[myName()] = r.voiceId; }).catch(e => toast('Your table voice: ' + cleanErr(e), 'red'));
     me = 0; g = null; decisions = []; token++; renderPlay();       // any solo hand in progress is abandoned
     peer.on('open', () => { if (room && room.peer === peer) { room.status = ''; renderPlay(); feed('', '<b>👥 Table ' + code + ' is open</b>Send your friends the code. They open Poker Angel → 🎓 Trainer → Join, and type it in.'); } });
     peer.on('connection', (conn) => {
@@ -1886,6 +1888,12 @@ const Trainer = (() => {
     } else if (m.t === 'act') {
       const c = room.conns.get(conn);
       if (c && !c.pending && g && g.handNo === m.handNo && g.toAct === c.seat) doAct(c.seat, String(m.type || ''), Number(m.to));
+    } else if (m.t === 'voice') {
+      const c = room.conns.get(conn); if (!c || typeof m.b64 !== 'string' || m.b64.length > 12e6) return;
+      if (!HAS_TTS()) { if (!room.voiceNote) { room.voiceNote = true; feed('', '<b>🎙 ' + esc(c.name) + ' sent a table voice</b>To hear your friends’ voices at the table, set up ElevenLabs in ⚙ Settings → Voice and tick 🗣 Table chatter.'); } return; }
+      window.api.ttsClone({ name: c.name, mime: String(m.mime || ''), b64: m.b64, hash: String(m.hash || '') })
+        .then(r => { if (room && room.voices) { room.voices[c.name] = r.voiceId; toast('🎙 ' + c.name + '’s voice is ready' + (r.reused ? ' (from last time)' : ''), 'green'); } })
+        .catch(e => toast(c.name + '’s voice: ' + cleanErr(e), 'red'));
     }
   }
   // Friends who joined since the last deal take their seats (replacing that seat's bot).
@@ -1947,7 +1955,7 @@ const Trainer = (() => {
     peer.on('open', () => {
       const conn = peer.connect(PEER_PREFIX + code.toLowerCase(), { reliable: true, serialization: 'json' });
       room.conn = conn;
-      conn.on('open', () => { clearTimeout(giveUp); room.status = ''; conn.send({ t: 'hello', name: myName() }); feed('', '<b>👥 Joined table ' + code + '</b>You’re dealt in from the next hand.'); renderPlay(); });
+      conn.on('open', () => { clearTimeout(giveUp); room.status = ''; conn.send({ t: 'hello', name: myName() }); const vp = voicePayload(); if (vp) { try { conn.send(vp); } catch (e) {} } feed('', '<b>👥 Joined table ' + code + '</b>You’re dealt in from the next hand.'); renderPlay(); });
       conn.on('data', onHostMsg);
       conn.on('close', () => { if (room && room.conn === conn) { toast('The host closed the table', 'red'); leaveRoom(true); } });
     });
@@ -1961,6 +1969,7 @@ const Trainer = (() => {
   function onHostMsg(m) {
     if (!isGuest() || !m || typeof m !== 'object') return;
     if (m.t === 'full') { toast('That table is full (' + NSEATS + ' players)', 'red'); leaveRoom(true); return; }
+    if (m.t === 'say') return onSay(m);
     if (m.t !== 'state') return;
     Object.assign(room, { faceUp: !!m.faceUp, players: m.players || [] });
     me = typeof m.seat === 'number' ? m.seat : -1;
@@ -2262,6 +2271,7 @@ const Trainer = (() => {
     if (!CAN_TALK()) return;
     const t = forSpeech(text); if (!t) return;
     ttsStop(); if (CAN_SPEAK) try { speechSynthesis.cancel(); } catch (e) {}
+    if (chatterGain) { try { chatterGain.gain.setTargetAtTime(0.35, actx.currentTime, 0.1); chatterGain.gain.setTargetAtTime(1, actx.currentTime + 2.5, 1.5); } catch (e) {} }
     if (HAS_TTS() && ttsFails < 3) ttsSay(passages(t, 500)); else speakLocal(passages(t, 220));
   }
   function hush() { ttsStop(); if (CAN_SPEAK) try { speechSynthesis.cancel(); } catch (e) {} }
@@ -2279,6 +2289,168 @@ const Trainer = (() => {
       + '<button class="ghost tr-mini" data-act="ui:voicetry">🔈 Try</button>'
       + (window.api && window.api.ttsSpeak ? '<span class="tr-dim">Want a natural voice, or a family member’s own? ⚙ Settings → Voice.</span>' : '') + '</span>';
   }
+  // ---- 🎙 my table voice ----
+  // A short paragraph read aloud once, kept on this PC, and sent to the host when you join a table.
+  // The host's ElevenLabs account clones it so your character can talk at the table. Nothing is sent
+  // without the consent tick, and it only ever goes to the host of a table you chose to join.
+  const TVOICE_KEY = 'pokerangel.tablevoice', TVOICE_MAX_S = 60, TVOICE_MIN_S = 12;
+  const VOICE_PARA = 'Evening, everyone. Shuffle up and deal. I’ve got a feeling about tonight — the cards have been kind to me all week, and I’m not about to argue with them. Pass the chips, pour me something warm, and let’s see a flop. If you bet into me, I might just call; if you check, I might just bet. Either way, no hard feelings — it’s only a game, and it’s a good one.';
+  let myVoice = null; try { myVoice = JSON.parse(ls(TVOICE_KEY) || 'null'); } catch (e) { myVoice = null; }
+  const CAN_RECORD = typeof navigator !== 'undefined' && navigator.mediaDevices && typeof MediaRecorder !== 'undefined' && !!(window.api && window.api.ttsClone);
+  const rec = { r: null, chunks: [], t0: 0, timer: 0, stream: null };
+  const hashOf = str => { let h = 5381; for (let i = 0; i < str.length; i += 97) h = ((h << 5) + h + str.charCodeAt(i)) >>> 0; return h.toString(36) + str.length.toString(36); };
+  async function recStart() {
+    if (rec.r) return;
+    try {
+      rec.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'].find(m => MediaRecorder.isTypeSupported(m)) || '';
+      rec.r = new MediaRecorder(rec.stream, mime ? { mimeType: mime, audioBitsPerSecond: 64000 } : undefined); rec.chunks = []; rec.t0 = Date.now();
+      rec.r.ondataavailable = e => { if (e.data && e.data.size) rec.chunks.push(e.data); };
+      rec.r.onstop = () => {
+        const secs = Math.round((Date.now() - rec.t0) / 1000), blob = new Blob(rec.chunks, { type: rec.r.mimeType || mime || 'audio/webm' });
+        try { rec.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+        rec.r = null; rec.stream = null; clearInterval(rec.timer);
+        if (secs < TVOICE_MIN_S) { toast('That was only ' + secs + ' seconds — read the whole paragraph (about 20–30 seconds)', 'red'); renderMain(); return; }
+        const fr = new FileReader();
+        fr.onload = () => { const m = String(fr.result).match(/^data:([^;]+);base64,(.+)$/); if (!m) return; myVoice = { mime: m[1], b64: m[2], hash: hashOf(m[2]), secs, when: Date.now() }; try { ls(TVOICE_KEY, JSON.stringify(myVoice)); } catch (e) { toast('Couldn’t keep the recording on this PC (too big) — it will still be sent this session', 'red'); } toast('🎙 Recorded ' + secs + ' seconds — play it back to check', 'green'); renderMain(); };
+        fr.readAsDataURL(blob);
+      };
+      rec.r.start(250);
+      rec.timer = setInterval(() => { const el = $('trRecTime'); if (el) el.textContent = Math.round((Date.now() - rec.t0) / 1000) + ' s'; if (Date.now() - rec.t0 > TVOICE_MAX_S * 1000) recStop(); }, 250);
+      renderMain();
+    } catch (e) { toast('Couldn’t use the microphone: ' + cleanErr(e), 'red'); }
+  }
+  function recStop() { if (rec.r && rec.r.state !== 'inactive') rec.r.stop(); }
+  let recPlay = null;
+  function recPlayback() { if (!myVoice) return; if (recPlay) { try { recPlay.pause(); } catch (e) {} } recPlay = new Audio('data:' + myVoice.mime + ';base64,' + myVoice.b64); recPlay.play().catch(() => {}); }
+  function recDelete() { myVoice = null; try { localStorage.removeItem(TVOICE_KEY); } catch (e) {} renderMain(); }
+  const voicePayload = () => (myVoice && opts.voiceConsent ? { t: 'voice', name: myName(), mime: myVoice.mime, b64: myVoice.b64, hash: myVoice.hash } : null);
+  function voiceRecHtml() {
+    if (!CAN_RECORD) return '';
+    const when = myVoice ? new Date(myVoice.when).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : '';
+    return '<div class="tr-q tr-rec"><b>🎙 My table voice</b> — read this paragraph once (about 25 seconds). When you join a friend’s table it goes to the host, whose ElevenLabs account gives your character your own voice for the table talk. '
+      + (HAS_TTS() ? 'As a host, your own recording voices your seat too.' : '') + '<div class="tr-para">' + esc(VOICE_PARA) + '</div>'
+      + '<div class="tr-row">' + (rec.r ? '<button class="fold" data-act="rec:stop">⏹ Stop</button><span class="tr-dim">Recording… <b id="trRecTime">0 s</b></span>'
+        : '<button data-act="rec:start">' + (myVoice ? '🎙 Record again' : '🎙 Record') + '</button>' + (myVoice ? '<button class="ghost" data-act="rec:play">▶ Play back</button><button class="ghost" data-act="rec:delete">Delete</button><span class="tr-dim">Recorded ' + myVoice.secs + ' s on ' + esc(when) + '.</span>' : ''))
+      + '</div><label class="tr-dim"><input type="checkbox" data-opt="voiceConsent"' + (opts.voiceConsent ? ' checked' : '') + ' /> I agree that this recording may be sent to the host of a table I join, and cloned on their ElevenLabs account to voice my character at that table.</label></div>';
+  }
+
+  // ---- 🗣 table talk and 🎧 room sound ----
+  // Players who are out of the hand (and everyone between hands) occasionally say a short, harmless
+  // line — in their own recorded voice if they sent one, or a stock voice for a bot — played softly
+  // from their side of the table. Never while the coaching is talking; by default never while it's
+  // your turn. One line every half a minute or so: atmosphere, not a conversation. The lines come from
+  // a fixed bank, so after the first time each is served from the cache and costs nothing.
+  const REMARKS = {
+    watching: ['Glad I’m out of this one.', 'Ooh, that’s a big bet.', 'Here we go.', 'I’d be sweating that.', 'Somebody’s got something.', 'Nice pot.', 'Come on, show us a river card.', 'Chips flying tonight.', 'I’ll get the next one.', 'Interesting.', 'Take your time.', 'This is getting expensive.', 'I’m happy watching this one.', 'Go on then.'],
+    between: ['Nice hand.', 'Well played.', 'Unlucky.', 'That river!', 'Shuffle up.', 'Anyone for a cuppa?', 'Right, next one.', 'I’m card dead tonight.', 'Easy game, this.', 'That’s poker.', 'Ouch.', 'Deal me a decent one for once.', 'Same again.', 'Who’s dealing?', 'I need a better seat.', 'The cards owe me.'],
+    won: ['Thank you very much.', 'Ship it.', 'About time.', 'Told you.', 'I’ll take that.', 'Lovely.'],
+    lost: ['Unbelievable.', 'Of course.', 'Every time.', 'Nice one.', 'I’ll remember that.', 'Typical.'],
+  };
+  function pickRemark(kind, recent) {
+    const bank = REMARKS[kind] || REMARKS.between, fresh = bank.filter(l => (recent || []).indexOf(l) < 0);
+    const from = fresh.length ? fresh : bank; return from[Math.floor(Math.random() * from.length)];
+  }
+  const FEMALE = /^(Mia|Zara|Rosa|Priya|Gloria|Lena)$/;
+  let actx = null, chatterGain = null, roomNodes = null, chatterTimer = 0, chatterBusy = false, stockVoices = null, recentSaid = [];
+  function audioCtx() {
+    if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); chatterGain = actx.createGain(); chatterGain.gain.value = 1; chatterGain.connect(actx.destination); } catch (e) { return null; } }
+    if (actx.state === 'suspended') actx.resume().catch(() => {});
+    return actx;
+  }
+  const panOf = seat => { try { const x = layout().seat[view(seat)][0]; return Math.max(-0.85, Math.min(0.85, (x - 50) / 60)); } catch (e) { return 0; } };
+  const chatterVol = () => ({ soft: 0.22, normal: 0.38, loud: 0.6 })[opts.chatterVol || 'soft'] || 0.22;
+  async function playClip(b64, mime, gain, pan) {
+    const ctx = audioCtx(); if (!ctx) return;
+    const bin = atob(b64), buf = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+    const audio = await ctx.decodeAudioData(buf.buffer);
+    await new Promise(res => {
+      const src = ctx.createBufferSource(); src.buffer = audio;
+      const g1 = ctx.createGain(); g1.gain.value = gain;
+      const pn = ctx.createStereoPanner ? ctx.createStereoPanner() : null; if (pn) pn.pan.value = pan;
+      src.connect(g1); if (pn) { g1.connect(pn); pn.connect(chatterGain); } else g1.connect(chatterGain);
+      src.onended = res; src.start();
+    });
+  }
+  // Who may chatter now, and in which voice.
+  function chatterCandidates() {
+    if (!g || me < 0) return [];
+    return g.players.map((p, j) => ({ p, j })).filter(o => o.j !== me && (g.over || o.p.folded || o.p.out))
+      .map(o => ({ seat: o.j, name: o.p.name, voiceId: voiceFor(o.p) })).filter(o => o.voiceId);
+  }
+  function voiceFor(p) {
+    if (room && room.voices && room.voices[p.name]) return room.voices[p.name];
+    if (!p.style || !stockVoices || !stockVoices.length) return null;              // a person without a recording stays silent
+    const fem = FEMALE.test(p.name), pool = stockVoices.filter(v => fem ? /female/i.test(v.about) : /(^|[^e])male/i.test(v.about));
+    const list = pool.length ? pool : stockVoices;
+    let h = 0; for (const ch of p.name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return list[h % list.length].id;
+  }
+  const chatterOn = () => !!opts.chatter && HAS_TTS() && !isGuest() && !(room && room.web);
+  function chatterSchedule() {
+    clearTimeout(chatterTimer);
+    if (!chatterOn()) return;
+    const base = opts.chatterOften === 'more' ? 18000 : opts.chatterOften === 'less' ? 60000 : 32000;
+    chatterTimer = setTimeout(chatterTick, base * (0.6 + Math.random() * 0.8));
+  }
+  async function chatterTick() {
+    if (!chatterOn()) return;
+    try {
+      if (!shown || tab !== 'play' || !g || voiceBusy() || chatterBusy || (opts.chatterQuiet !== false && !g.over && g.toAct === me)) return;
+      if (!stockVoices) { try { stockVoices = (await window.api.ttsVoices()).filter(v => !v.own); } catch (e) { stockVoices = []; } }
+      const cands = chatterCandidates(); if (!cands.length) return;
+      const who = cands[Math.floor(Math.random() * cands.length)];
+      let kind = g.over ? 'between' : 'watching';
+      if (g.over && g.result) { if (g.result.wins.some(w => w.i === who.seat)) kind = 'won'; else if (g.result.showdown && !g.players[who.seat].folded && Math.random() < 0.6) kind = 'lost'; }
+      const line = pickRemark(kind, recentSaid); recentSaid = recentSaid.concat(line).slice(-8);
+      const clip = await window.api.ttsSay({ voiceId: who.voiceId, text: line, speed: 1 });
+      if (!clip || voiceBusy()) return;
+      chatterBusy = true;
+      if (isHost()) for (const [conn] of room.conns) { if (conn.open) try { conn.send({ t: 'say', seat: who.seat, mime: clip.mime, b64: clip.b64 }); } catch (e) {} }
+      await playClip(clip.b64, clip.mime, chatterVol(), panOf(who.seat));
+    } catch (e) { console.error('chatter', e); }
+    finally { chatterBusy = false; chatterSchedule(); }
+  }
+  // A guest hears what the host's table says (its own seat is at the bottom, so the panning is its own).
+  function onSay(m) { if (!opts.chatter || !m || typeof m.b64 !== 'string' || m.b64.length > 2e6) return; playClip(m.b64, String(m.mime || 'audio/mpeg'), chatterVol(), panOf(Number(m.seat) || 0)).catch(() => {}); }
+  // Room sound: a low murmur and the odd riffle of chips, synthesised — no recording, nothing to download.
+  const roomVol = () => ({ soft: 0.5, normal: 1, loud: 1.6 })[opts.roomVol || 'soft'] || 0.5;
+  function roomStart() {
+    const ctx = audioCtx(); if (!ctx || roomNodes) return;
+    const len = ctx.sampleRate * 4, buf = ctx.createBuffer(2, len, ctx.sampleRate);
+    for (let ch = 0; ch < 2; ch++) { const d = buf.getChannelData(ch); let last = 0; for (let i = 0; i < len; i++) { const w = Math.random() * 2 - 1; last = (last + 0.02 * w) / 1.02; d[i] = last * 3.5; } }   // brown-ish noise
+    const src = ctx.createBufferSource(); src.buffer = buf; src.loop = true;
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 420;
+    const murmur = ctx.createBiquadFilter(); murmur.type = 'bandpass'; murmur.frequency.value = 700; murmur.Q.value = 0.7;
+    const lfo = ctx.createOscillator(), lfoG = ctx.createGain(); lfo.frequency.value = 0.08; lfoG.gain.value = 180; lfo.connect(lfoG); lfoG.connect(murmur.frequency); lfo.start();
+    const gain = ctx.createGain(); gain.gain.value = 0.05 * roomVol();
+    src.connect(lp); lp.connect(murmur); murmur.connect(gain); gain.connect(ctx.destination); src.start();
+    const chips = () => {
+      if (!roomNodes) return;
+      const n = ctx.sampleRate * 0.05, b = ctx.createBuffer(1, n, ctx.sampleRate), d = b.getChannelData(0);
+      for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (n * 0.25));
+      const s2 = ctx.createBufferSource(); s2.buffer = b; const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 2200 + Math.random() * 1500; bp.Q.value = 4;
+      const g2 = ctx.createGain(); g2.gain.value = 0.06 * roomVol(); const pn = ctx.createStereoPanner ? ctx.createStereoPanner() : null; if (pn) pn.pan.value = Math.random() * 1.6 - 0.8;
+      s2.connect(bp); bp.connect(g2); if (pn) { g2.connect(pn); pn.connect(ctx.destination); } else g2.connect(ctx.destination);
+      const burst = 2 + Math.floor(Math.random() * 4); for (let k = 0; k < burst; k++) { const s3 = ctx.createBufferSource(); s3.buffer = b; s3.connect(bp); s3.start(ctx.currentTime + k * 0.07); }
+      roomNodes.timer = setTimeout(chips, 6000 + Math.random() * 10000);
+    };
+    roomNodes = { src, gain, lfo, timer: setTimeout(chips, 4000) };
+  }
+  function roomStop() { if (!roomNodes) return; clearTimeout(roomNodes.timer); try { roomNodes.src.stop(); roomNodes.lfo.stop(); } catch (e) {} roomNodes = null; }
+  function roomSync() { if (opts.roomTone && shown && tab === 'play' && g) { if (roomNodes) roomNodes.gain.gain.value = 0.05 * roomVol(); else roomStart(); } else roomStop(); }
+  function atmosphereHtml() {
+    const canChat = HAS_TTS() || isGuest();
+    if (!canChat && !(window.AudioContext || window.webkitAudioContext)) return '';
+    const sel = (key, cur, items) => '<select data-sel="' + key + '">' + items.map(([v, n]) => '<option value="' + v + '"' + (cur === v ? ' selected' : '') + '>' + n + '</option>').join('') + '</select>';
+    return '<span class="tr-voice">'
+      + (canChat ? '<label title="Players who are out of the hand say the odd line, in their own recorded voice or a stock one — softly, from their side of the table, never over the coaching"><input type="checkbox" data-opt="chatter"' + (opts.chatter ? ' checked' : '') + ' /> 🗣 Table chatter</label>'
+        + (opts.chatter ? sel('chatterVol', opts.chatterVol || 'soft', [['soft', 'soft'], ['normal', 'normal'], ['loud', 'louder']]) + (isGuest() ? '' : sel('chatterOften', opts.chatterOften || 'some', [['less', 'rarely'], ['some', 'now and then'], ['more', 'often']]) + '<label title="No chatter while you are deciding"><input type="checkbox" data-opt="chatterQuiet"' + (opts.chatterQuiet !== false ? ' checked' : '') + ' /> quiet on my turn</label>') : '') : '')
+      + '<label title="A low room murmur and the odd riffle of chips"><input type="checkbox" data-opt="roomTone"' + (opts.roomTone ? ' checked' : '') + ' /> 🎧 Room sound</label>'
+      + (opts.roomTone ? sel('roomVol', opts.roomVol || 'soft', [['soft', 'soft'], ['normal', 'normal'], ['loud', 'louder']]) : '') + '</span>';
+  }
+  const INVITE = code => 'Come and play poker with me on Poker Angel!\nTable code: ' + code + '\n1. Open Poker Angel → 🎓 Trainer.\n2. Before you join, press 🎙 My table voice and read the short paragraph — it gives your character your own voice at the table.\n3. Type ' + code + ' under Play with friends and press Join a table.';
+
   const VOICE_SAMPLE = 'This is how I’ll read the coaching. You have Ace King suited on the button. The pot is 9 big blinds and it costs 3 to call, so you need to win 1 time in 4. Raise to 10 big blinds.';
   // What the right-hand column says, minus buttons, drop-downs and stat tables.
   function panelText() {
@@ -2342,7 +2514,7 @@ const Trainer = (() => {
       ? '<label title="Face up: everyone sees every card and every grade as it happens. Own only: your own cards and grades; everyone’s are revealed when the hand ends."><input type="checkbox" data-room="faceUp"' + (room.faceUp ? ' checked' : '') + ' /> Cards face up for everyone</label>'
       : '<span class="tr-dim">' + (room.faceUp ? 'Cards face up for everyone' : 'Own cards only — all revealed at the end of each hand') + '</span>';
     return '<div class="tr-room"><b>👥 Table ' + esc(room.code) + '</b>'
-      + (isHost() ? '<button class="ghost" data-act="room:copy">Copy code</button>' : '')
+      + (isHost() ? '<button class="ghost" data-act="room:copy">Copy code</button><button class="ghost" data-act="room:invite" title="A message to send your friends: the code, and how to join — with their table voice">📋 Copy invitation</button>' : '')
       + '<span class="tr-dim">' + (room.status ? esc(room.status) : names) + '</span><span style="flex:1"></span>' + mode
       + '<button class="ghost" data-act="room:leave">' + (isHost() ? 'Close table' : 'Leave') + '</button></div>';
   }
@@ -2386,7 +2558,7 @@ const Trainer = (() => {
         + '<div class="tr-q" style="margin-top:8px"><b>Play with friends</b> — over the internet, everyone graded, everyone learning together. ' + (IN_BROWSER ? 'Friends open this same page — nothing to install.' : 'Each friend needs Poker Angel.') + '</div>'
         + '<div class="tr-row"><input id="trName" placeholder="Your name" maxlength="16" style="width:180px" value="' + esc(ls(NAME_KEY) || '') + '" />'
         + '<button data-act="room:host">👥 Host a table</button>'
-        + '<input id="trCode" placeholder="Table code" maxlength="5" style="width:130px;text-transform:uppercase" /><button class="ghost" data-act="room:join">🔗 Join a table</button></div></div>';
+        + '<input id="trCode" placeholder="Table code" maxlength="5" style="width:130px;text-transform:uppercase" /><button class="ghost" data-act="room:join">🔗 Join a table</button></div>' + voiceRecHtml() + '</div>';
       renderSpot(); return;
     }
     const T = g.tour, felt = feltHtml();
@@ -2424,7 +2596,7 @@ const Trainer = (() => {
     }
     const optsRow = levelSelHtml() + '<label><input type="checkbox" data-opt="advise"' + (opts.advise ? ' checked' : '') + ' /> Advise me before I act</label>'
       + '<label><input type="checkbox" data-opt="detail"' + (opts.detail ? ' checked' : '') + ' /> 📊 Detailed explanations (stat tables)</label>'
-      + (CAN_TALK() ? '<label><input type="checkbox" data-opt="speak"' + (opts.speak ? ' checked' : '') + ' /> 🔊 Read explanations aloud</label>' + voiceSelHtml() : '')
+      + (CAN_TALK() ? '<label><input type="checkbox" data-opt="speak"' + (opts.speak ? ' checked' : '') + ' /> 🔊 Read explanations aloud</label>' + voiceSelHtml() : '') + atmosphereHtml()
       + '<label><input type="checkbox" data-opt="pause"' + (pauseOn() ? ' checked' : '') + ' /> Explain after I act' + (room ? '' : ' (and pause)') + '</label>'
       + (room ? '' : '<label><input type="checkbox" data-opt="showBots"' + (opts.showBots ? ' checked' : '') + ' /> Show the bots’ cards</label>')
       + (room ? '' : '<label title="Each bot move waits for Next move ▶, so you can read the comment beside the player. Untick to let the bots play at normal speed."><input type="checkbox" data-opt="stepBots"' + (opts.stepBots !== false ? ' checked' : '') + ' /> ⏯ Bots wait for Next</label>')
@@ -3242,6 +3414,7 @@ const Trainer = (() => {
       if (v === 'start' || v === 'again') return startTournament();
       if (v === 'menu') { freshTable(); broadcast(); renderPlay(); }
     },
+    rec: v => { if (v === 'start') recStart(); else if (v === 'stop') recStop(); else if (v === 'play') recPlayback(); else if (v === 'delete') recDelete(); },
     room: v => {
       const nameIn = $('trName');
       if (nameIn) ls(NAME_KEY, String(nameIn.value || '').trim().slice(0, 16));
@@ -3249,6 +3422,7 @@ const Trainer = (() => {
       if (v === 'join') return joinTable(($('trCode') || {}).value);
       if (v === 'leave') return leaveRoom();
       if (v === 'copy' && room) { try { navigator.clipboard.writeText(room.code); toast('Table code ' + room.code + ' copied', 'green'); } catch (e) {} }
+      if (v === 'invite' && room) { try { navigator.clipboard.writeText(INVITE(room.code)); toast('Invitation copied — paste it into a message', 'green'); } catch (e) {} }
     },
     pf: v => {
       if (v === 'next') { genPf(); return renderPf(); }
@@ -3280,13 +3454,14 @@ const Trainer = (() => {
     if (!room && g && !g.over && !isHuman(g.players[g.toAct])) step();   // solo: the bots pick up where they left off
   }
   function close() {
-    shown = false;
+    shown = false; roomStop(); clearTimeout(chatterTimer);
     if (!room) token++;                                            // a friends' table carries on while you're in the coach
 
     $('trainer').classList.remove('show'); $('trainer').setAttribute('aria-hidden', 'true');
     const nav = $('navTrainer'); if (nav) nav.classList.remove('on');
   }
   function wire() {
+    document.addEventListener('click', () => { if (actx && actx.state === 'suspended') actx.resume().catch(() => {}); }, true);
     loadVoiceCfg();
     if (CAN_SPEAK) { try { speechSynthesis.onvoiceschanged = () => { if (shown && tab === 'play') renderPlay(); }; } catch (e) {} }
     const nav = $('navTrainer'); if (nav) nav.onclick = () => (shown ? close() : open());
@@ -3305,12 +3480,16 @@ const Trainer = (() => {
       const sel = pick(e, 'data-sel'); if (sel && sel.dataset.sel === 'level') return setLevel(sel.value);
       if (sel && sel.dataset.sel === 'voice') { opts.voice = sel.value; saveOpts(); speak(VOICE_SAMPLE); return; }
       if (sel && sel.dataset.sel === 'speakRate') { opts.speakRate = parseFloat(sel.value) || 1; saveOpts(); speak(VOICE_SAMPLE); return; }
+      if (sel && /^(chatterVol|chatterOften|roomVol)$/.test(sel.dataset.sel)) { opts[sel.dataset.sel] = sel.value; saveOpts(); roomSync(); chatterSchedule(); return; }
       const b = pick(e, 'data-opt'); if (!b) return;
       opts[b.dataset.opt] = !!b.checked; saveOpts();
       if (b.dataset.opt === 'showBots') renderPlay();
       if (b.dataset.opt === 'pause' && !b.checked && g && !g.over) step();     // un-pausing lets the bots carry on
       if (b.dataset.opt === 'advise' || b.dataset.opt === 'pause' || b.dataset.opt === 'detail') renderPlay();
       if (b.dataset.opt === 'autoCalm') { if (auto) { auto.calm = !!b.checked; if (auto.calm) auto.speed = 'slow'; } renderPlay(); }
+      if (b.dataset.opt === 'chatter' || b.dataset.opt === 'chatterQuiet') { audioCtx(); chatterSchedule(); renderPlay(); }
+      if (b.dataset.opt === 'roomTone') { audioCtx(); roomSync(); renderPlay(); }
+      if (b.dataset.opt === 'voiceConsent') renderMain();
       if (b.dataset.opt === 'watch' || b.dataset.opt === 'stepBots') { renderPlay(); step(); }
       if (b.dataset.opt === 'speak') { if (opts.speak) { spokenLast = ''; said = new Set(); autoSpeak(); } else hush(); }
     };
@@ -3324,10 +3503,10 @@ const Trainer = (() => {
   }
 
   // ⚙ Settings changed the voice: pick the new one up (app.js calls this when the dialog closes).
-  function voiceChanged() { loadVoiceCfg().then(() => { ttsFails = 0; if (shown && tab === 'play') renderPlay(); }); }
+  function voiceChanged() { loadVoiceCfg().then(() => { ttsFails = 0; stockVoices = null; chatterSchedule(); if (shown && tab === 'play') renderPlay(); }); }
   return {
     wire, open, close, voiceChanged, voiceLabel,
-    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech, storyHtml, levelWhy, COACH_LEVELS, primerHtml, HAND_RANKS, rankOf, setLevelForTest: v => { opts.level = v; } },
+    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech, storyHtml, levelWhy, COACH_LEVELS, primerHtml, HAND_RANKS, rankOf, REMARKS, pickRemark, INVITE, VOICE_PARA, setLevelForTest: v => { opts.level = v; } },
   };
 })();
 
