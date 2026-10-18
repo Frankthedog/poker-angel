@@ -94,6 +94,13 @@
   .tr-seat.win .tr-plate{border-color:#22c55e;box-shadow:0 0 0 2px #22c55e66,0 0 20px #22c55e66}
   .tr-bubble{font-size:11px;background:#e2e8f0;color:#0f172a;border-radius:8px;padding:2px 8px;font-weight:700;white-space:nowrap}
   .tr-bubble.win{background:#22c55e;color:#04210f}
+  .tr-note{position:absolute;z-index:6;width:205px;background:#0d1a33f2;border:1px solid #3b82f6;border-radius:10px;padding:7px 10px;font-size:11.5px;line-height:1.45;color:#dbe7f6;text-align:left;white-space:pre-line;box-shadow:0 6px 22px #000a;animation:trNote .18s ease-out;pointer-events:none}
+  .tr-note b{display:block;color:#fde68a;font-size:12px;margin-bottom:2px}
+  .tr-note.r{transform:translate(72px,-50%)}
+  .tr-note.l{transform:translate(calc(-100% - 72px),-50%)}
+  .tr-note.b{transform:translate(-50%,86px)}
+  .tr-note.t{transform:translate(-50%,calc(-100% - 86px))}
+  @keyframes trNote{from{opacity:0}to{opacity:1}}
   .tr-cards{display:flex;gap:4px;min-height:60px;align-items:flex-end}
   .tc{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;width:44px;height:60px;border-radius:5px;background:#f8fafc;color:#0f172a;font-weight:800;box-shadow:0 2px 6px rgba(0,0,0,.5);line-height:1;border:1px solid #cbd5e1;flex:0 0 auto}
   .tc b{font-size:21px}.tc i{font-style:normal;font-size:19px}

@@ -294,7 +294,7 @@ const Trainer = (() => {
       Object.assign(p, { stack: out ? 0 : (T ? T.chips[i] / unit : 100), cards: out ? [] : [deck.pop(), deck.pop()], bet: 0, total: 0, folded: out, out, allin: false, acted: false, actedAt: 0, rangeW: 1, post: [] });
     });
     g.startStacks = g.players.map(p => p.stack);
-    Object.assign(g, { deck, board: [], street: 0, curBet: 0, minRaise: 1, raises: 0, openerSeat: -1, log: [], acts: [], over: false, result: null, _done: false, dead: 0 });
+    Object.assign(g, { deck, board: [], street: 0, curBet: 0, minRaise: 1, raises: 0, openerSeat: -1, log: [], acts: [], watchLog: [], over: false, result: null, _done: false, dead: 0 });
     const sbSeat = n === 2 ? order[0] : order[1], bbSeat = n === 2 ? order[1] : order[2];
     g.bbSeat = bbSeat; g.lastBB = bbSeat; g.prevAlive = n; g.unit = unit;
     const post = (i, amt, ante) => {
@@ -1175,10 +1175,9 @@ const Trainer = (() => {
     const line = w => { const p = g.players[w.i]; return '<div class="tr-why"><b class="tr-lbl">' + esc(plain(p.name + ' (' + posOf(g, w.i) + ') ' + w.txt)) + '</b> <span class="tr-dim">' + esc(cardsTxt(p.cards) + ' · ' + botLabel(p)) + '</span>\n' + esc(plain(w.why))
       + (STYLE_HOW[p.style] ? '\n<i class="tr-dim">How a ' + esc(styleName(p.style)) + ' player plays: ' + esc(STYLE_HOW[p.style]) + '</i>' : '') + '</div>'; };
     const log = g.watchLog || [], after = log.filter(w => w.at > fold), before = log.filter(w => w.at < fold);
-    const latest = after[after.length - 1], earlier = after.slice(0, -1);
     return '<div class="tr-explain tr-narrate"><b>👀 You folded — watch how the bots play it out</b>'
-      + (latest ? line(latest) : '<div class="tr-why">Their cards are face up now. Press <b>Next move ▶</b> under the table to see each move and why they make it.</div>')
-      + (earlier.length ? '<details><summary>Earlier moves since you folded (' + earlier.length + ')</summary>' + earlier.map(line).join('') + '</details>' : '')
+      + '<div class="tr-why">Their cards are face up now. Press <b>Next move ▶</b> under the table — each player’s reason appears in a box beside them.</div>'
+      + (after.length ? '<details><summary>All moves since you folded (' + after.length + ')</summary>' + after.map(line).join('') + '</details>' : '')
       + (before.length ? '<details><summary>Why they played as they did before you folded (' + before.length + ')</summary>' + before.map(line).join('') + '</details>' : '')
       + '</div>';
   }
@@ -1772,6 +1771,19 @@ const Trainer = (() => {
     void pos;
     return out;
   }
+  // The comment on the move just made sits in a box beside that player until the next move. With their
+  // cards face up (you folded, or "Show the bots' cards") it's the bot's own reason; otherwise only
+  // what the table can see — what that action says about their hand.
+  function seatNote(i) {
+    const log = g.watchLog || [], w = log[log.length - 1];
+    if (g.over || !w || w.i !== i || w.at !== g.acts.length - 1 || i === me) return '';
+    const p = g.players[i], open = opts.showBots || watchOn();
+    const read = p.folded ? 'Out of this hand.' : p.rangeW >= 0.99 ? 'Could still have any two cards.' : 'Likely holds one of the best ' + r1(p.rangeW * 100) + '% of hands.';
+    const body = open && w.why ? w.why : read + (STYLE_HOW[p.style] ? '\n' + styleName(p.style) + ': ' + STYLE_HOW[p.style] : '');
+    const [x, y] = layout().seat[view(i)], side = x < 0 || x > 100 ? (x < 50 ? 'r' : 'l')                     // side seats: in over the felt's edge
+      : x >= 35 && x <= 65 ? (y < 50 ? 'b' : 't') : (x < 50 ? 'l' : 'r');                 // corners: outwards, clear of the board
+    return '<div class="tr-note ' + side + '" style="left:' + x + '%;top:' + y + '%"><b>' + esc(plain(p.name + ' ' + w.txt)) + '</b>' + esc(plain(body)) + '</div>';
+  }
   function seatHtml(i) {
     const p = g.players[i], v = view(i), [x, y] = layout().seat[v], turn = !g.over && g.toAct === i, mine = i === me, T = g.tour;
     if (p.out) {
@@ -1887,6 +1899,7 @@ const Trainer = (() => {
     const pot = potTotal(g), betting = g.players.reduce((a, p) => a + p.bet, 0);
     let felt = '';
     for (let i = 0; i < g.players.length; i++) felt += seatHtml(i);
+    for (let i = 0; i < g.players.length; i++) felt += seatNote(i);
     g.players.forEach((p, i) => { if (p.bet > 0 && !g.over) { const b = layout().bet[view(i)]; felt += '<div class="tr-bet" style="left:' + b[0] + '%;top:' + b[1] + '%">' + bbs(p.bet) + '</div>'; } });
     const dl = layout().deal[view(g.button)];
     felt += '<div class="tr-dealer" style="left:' + dl[0] + '%;top:' + dl[1] + '%">D</div>';
@@ -1958,7 +1971,7 @@ const Trainer = (() => {
     } else if (holding()) {
       actions = '<button class="primary" data-act="play:continue">Continue ▶</button><span class="tr-dim">Read the explanation on the right first — the bots wait for you.</span>';
     } else if (watching()) {
-      actions = '<button class="primary" data-act="play:wnext">Next move ▶</button><button class="ghost" data-act="play:wall">Play the hand out ▶▶</button><span class="tr-dim">You folded — ' + esc(g.players[g.toAct].name) + ' is next to act. Each move is explained on the right.</span>';
+      actions = '<button class="primary" data-act="play:wnext">Next move ▶</button><button class="ghost" data-act="play:wall">Play the hand out ▶▶</button><span class="tr-dim">You folded — ' + esc(g.players[g.toAct].name) + ' is next to act. Each player’s reason appears in a box beside them.</span>';
     } else if (me < 0) actions = '<span class="tr-wait">Watching — you’re dealt in from the next ' + (T ? 'game' : 'hand') + '.</span>';
     else if (T && g.players[me].out) actions = '<span class="tr-wait">You’re out in ' + ordinal(T.place[me]) + ' — the rest plays on.</span>' + (isGuest() ? '' : '<button class="ghost" data-act="tour:menu">Leave this tournament</button>');
     else if (g.toAct !== me) actions = '<span class="tr-wait">' + (g.toAct >= 0 ? esc(g.players[g.toAct].name) + ' is thinking…' : 'Sending…') + '</span>';
@@ -2008,7 +2021,7 @@ const Trainer = (() => {
       if (sp) lines.push('<span class="tr-dim">' + (sp.type === 'shove' ? 'Push/fold spot: ' + r1(sp.S) + 'bb effective, ' + sp.m + ' behind.' : 'Facing an all-in of ' + r1(sp.S) + 'bb.') + '</span>');
     }
     const opps = g.players.map((q, j) => ({ q, j })).filter(o => o.j !== me && !o.q.folded);
-    if (opps.length && !g.over) {
+    if (opps.length && !g.over && false) {   // now in the box beside each player as they act (seatNote)
       lines.push('<span class="tr-dim">What the others probably hold, judged from how they’ve played:</span>');
       const unread = opps.filter(o => o.q.rangeW >= 0.99 && !(o.q.post || []).length);
       if (unread.length > 1) lines.push('· ' + unread.map(o => esc(o.q.name) + ' (' + posOf(g, o.j) + ')').join(', ') + ': haven’t shown anything yet — could have any two cards.');
