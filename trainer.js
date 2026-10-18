@@ -1858,7 +1858,7 @@ const Trainer = (() => {
     const code = newCode();
     const peer = new Peer(PEER_PREFIX + code.toLowerCase());
     autoStop(true); room = { role: 'host', code, peer, conns: new Map(), faceUp: true, status: 'Opening the table…', voices: {} }; ratings = {};
-    if (myVoice && opts.voiceConsent && HAS_TTS()) window.api.ttsClone({ name: myName(), mime: myVoice.mime, b64: myVoice.b64, hash: myVoice.hash }).then(r => { if (room && room.voices) room.voices[myName()] = r.voiceId; }).catch(e => toast('Your table voice: ' + cleanErr(e), 'red'));
+    if (HAS_TTS() && opts.myVoiceName && libVoiceId(opts.myVoiceName)) room.voices[myName()] = libVoiceId(opts.myVoiceName);
     me = 0; g = null; decisions = []; token++; renderPlay();       // any solo hand in progress is abandoned
     peer.on('open', () => { if (room && room.peer === peer) { room.status = ''; renderPlay(); feed('', '<b>👥 Table ' + code + ' is open</b>Send your friends the code. They open Poker Angel → 🎓 Trainer → Join, and type it in.'); } });
     peer.on('connection', (conn) => {
@@ -1955,7 +1955,7 @@ const Trainer = (() => {
     peer.on('open', () => {
       const conn = peer.connect(PEER_PREFIX + code.toLowerCase(), { reliable: true, serialization: 'json' });
       room.conn = conn;
-      conn.on('open', () => { clearTimeout(giveUp); room.status = ''; conn.send({ t: 'hello', name: myName() }); const vp = voicePayload(); if (vp) { try { conn.send(vp); } catch (e) {} } feed('', '<b>👥 Joined table ' + code + '</b>You’re dealt in from the next hand.'); renderPlay(); });
+      conn.on('open', () => { clearTimeout(giveUp); room.status = ''; conn.send({ t: 'hello', name: myName() }); voicePayload().then(vp => { if (vp && conn.open) { try { conn.send(vp); } catch (e) {} } }); feed('', '<b>👥 Joined table ' + code + '</b>You’re dealt in from the next hand.'); renderPlay(); });
       conn.on('data', onHostMsg);
       conn.on('close', () => { if (room && room.conn === conn) { toast('The host closed the table', 'red'); leaveRoom(true); } });
     });
@@ -2289,23 +2289,48 @@ const Trainer = (() => {
       + '<button class="ghost tr-mini" data-act="ui:voicetry">🔈 Try</button>'
       + (window.api && window.api.ttsSpeak ? '<span class="tr-dim">Want a natural voice, or a family member’s own? ⚙ Settings → Voice.</span>' : '') + '</span>';
   }
-  // ---- 🎙 my table voice ----
-  // A short paragraph read aloud once, kept on this PC, and sent to the host when you join a table.
-  // The host's ElevenLabs account clones it so your character can talk at the table. Nothing is sent
-  // without the consent tick, and it only ever goes to the host of a table you chose to join.
+  // ---- 🎙 voices: record, name, assign ----
+  // Several recordings, each with a name (Mum, Grandad, Dave…). On the desktop they live on this PC
+  // (main.js voices:*) and are cloned on ElevenLabs as soon as a key is set, so they can be assigned to
+  // the characters at the table (🎭 below) or chosen as the coach's voice in ⚙ Settings. One of them is
+  // "my table voice": sent to the host when you join a table by code, so your character speaks as you.
+  // On the web version (a phone) there is room for one recording, kept in the browser, and it can be
+  // saved as a file and imported on the PC. Nothing is sent without the consent tick.
   const TVOICE_KEY = 'pokerangel.tablevoice', TVOICE_MAX_S = 60, TVOICE_MIN_S = 12;
   const VOICE_PARA = 'Evening, everyone. Shuffle up and deal. I’ve got a feeling about tonight — the cards have been kind to me all week, and I’m not about to argue with them. Pass the chips, pour me something warm, and let’s see a flop. If you bet into me, I might just call; if you check, I might just bet. Either way, no hard feelings — it’s only a game, and it’s a good one.';
   let myVoice = null; try { myVoice = JSON.parse(ls(TVOICE_KEY) || 'null'); } catch (e) { myVoice = null; }
+  const HAS_LIB = !!(window.api && window.api.voicesList);
+  let voiceLib = [];                                                          // desktop: [{ name, mime, secs, when, hash, voiceId }]
+  async function loadLib() {
+    if (!HAS_LIB) return;
+    try { voiceLib = await window.api.voicesList(); } catch (e) { voiceLib = []; }
+    if (myVoice && !voiceLib.length) {                                        // a recording from before the library: keep it, under your name
+      try { await window.api.voicesSave({ name: myName(), mime: myVoice.mime, b64: myVoice.b64, secs: myVoice.secs, hash: myVoice.hash }); voiceLib = await window.api.voicesList(); opts.myVoiceName = myName(); saveOpts(); localStorage.removeItem(TVOICE_KEY); myVoice = null; } catch (e) {}
+    }
+  }
   const CAN_RECORD = typeof navigator !== 'undefined' && !!navigator.mediaDevices && typeof MediaRecorder !== 'undefined' && !(typeof WEB !== 'undefined' && WEB && !(typeof Peer === 'function'));
   const ON_PHONE = typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
   const rec = { r: null, chunks: [], t0: 0, timer: 0, stream: null };
   const hashOf = str => { let h = 5381; for (let i = 0; i < str.length; i += 97) h = ((h << 5) + h + str.charCodeAt(i)) >>> 0; return h.toString(36) + str.length.toString(36); };
+  const recName = () => { const el = $('trVoiceName'); const n = (el ? el.value : '').replace(/[^\w .'-]/g, '').trim().slice(0, 16); return n || myName(); };
+  // A finished recording or an imported file: into the library (desktop) or the browser (web).
+  async function keepVoice(v, name) {
+    if (!HAS_LIB) { myVoice = v; try { ls(TVOICE_KEY, JSON.stringify(v)); } catch (e) { toast('Couldn’t keep the recording in this browser (too big) — it will still be sent this session', 'red'); } renderMain(); return; }
+    try {
+      const r = await window.api.voicesSave({ name, mime: v.mime, b64: v.b64, secs: v.secs, hash: v.hash });
+      await loadLib();
+      if (!opts.myVoiceName || !voiceLib.some(x => x.name === opts.myVoiceName)) { opts.myVoiceName = r.name; saveOpts(); }
+      toast('🎙 ' + r.name + (r.voiceId ? ' is ready to use' : r.cloneError ? ' saved — not cloned: ' + r.cloneError : ' saved — it will be cloned once ElevenLabs is set up in ⚙ Settings'), r.voiceId ? 'green' : '');
+    } catch (e) { toast('Couldn’t save the recording: ' + cleanErr(e), 'red'); }
+    renderMain();
+  }
   async function recStart() {
     if (rec.r) return;
+    const name = recName();
     try {
       rec.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
       const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'].find(m => MediaRecorder.isTypeSupported(m)) || '';
-      rec.r = new MediaRecorder(rec.stream, mime ? { mimeType: mime, audioBitsPerSecond: 64000 } : undefined); rec.chunks = []; rec.t0 = Date.now();
+      rec.r = new MediaRecorder(rec.stream, mime ? { mimeType: mime, audioBitsPerSecond: 64000 } : undefined); rec.chunks = []; rec.t0 = Date.now(); rec.name = name;
       rec.r.ondataavailable = e => { if (e.data && e.data.size) rec.chunks.push(e.data); };
       rec.r.onstop = () => {
         const secs = Math.round((Date.now() - rec.t0) / 1000), blob = new Blob(rec.chunks, { type: rec.r.mimeType || mime || 'audio/webm' });
@@ -2313,7 +2338,7 @@ const Trainer = (() => {
         rec.r = null; rec.stream = null; clearInterval(rec.timer);
         if (secs < TVOICE_MIN_S) { toast('That was only ' + secs + ' seconds — read the whole paragraph (about 20–30 seconds)', 'red'); renderMain(); return; }
         const fr = new FileReader();
-        fr.onload = () => { const m = String(fr.result).match(/^data:([^;]+);base64,(.+)$/); if (!m) return; myVoice = { mime: m[1], b64: m[2], hash: hashOf(m[2]), secs, when: Date.now() }; try { ls(TVOICE_KEY, JSON.stringify(myVoice)); } catch (e) { toast('Couldn’t keep the recording on this PC (too big) — it will still be sent this session', 'red'); } toast('🎙 Recorded ' + secs + ' seconds — play it back to check', 'green'); renderMain(); };
+        fr.onload = () => { const m = String(fr.result).match(/^data:([^;]+);base64,(.+)$/); if (m) keepVoice({ mime: m[1], b64: m[2], hash: hashOf(m[2]), secs, when: Date.now() }, rec.name); };
         fr.readAsDataURL(blob);
       };
       rec.r.start(250);
@@ -2323,12 +2348,23 @@ const Trainer = (() => {
   }
   function recStop() { if (rec.r && rec.r.state !== 'inactive') rec.r.stop(); }
   let recPlay = null;
-  function recPlayback() { if (!myVoice) return; if (recPlay) { try { recPlay.pause(); } catch (e) {} } recPlay = new Audio('data:' + myVoice.mime + ';base64,' + myVoice.b64); recPlay.play().catch(() => {}); }
-  function recDelete() { myVoice = null; try { localStorage.removeItem(TVOICE_KEY); } catch (e) {} renderMain(); }
-  function recSave() {
-    if (!myVoice) return;
-    const ext = /mp4|m4a|aac/i.test(myVoice.mime) ? 'm4a' : /ogg/i.test(myVoice.mime) ? 'ogg' : /wav/i.test(myVoice.mime) ? 'wav' : /mpeg|mp3/i.test(myVoice.mime) ? 'mp3' : 'webm';
-    const a = document.createElement('a'); a.href = 'data:' + myVoice.mime + ';base64,' + myVoice.b64; a.download = 'poker-angel-voice-' + (myName() || 'me').replace(/\W+/g, '_') + '.' + ext;
+  const playB64 = (mime, b64) => { if (recPlay) { try { recPlay.pause(); } catch (e) {} } recPlay = new Audio('data:' + mime + ';base64,' + b64); recPlay.play().catch(() => {}); };
+  async function voiceData(name) {                                            // { mime, b64, hash, secs } for a library entry, or the browser's one
+    if (!HAS_LIB) return myVoice;
+    try { return await window.api.voicesGet({ name }); } catch (e) { return null; }
+  }
+  async function recPlayback(name) { const v = await voiceData(name); if (v) playB64(v.mime, v.b64); }
+  async function recDelete(name) {
+    if (!HAS_LIB) { myVoice = null; try { localStorage.removeItem(TVOICE_KEY); } catch (e) {} renderMain(); return; }
+    try { await window.api.voicesDelete({ name }); } catch (e) {}
+    if (opts.myVoiceName === name) { opts.myVoiceName = ''; }
+    for (const k of Object.keys(opts.voiceAssign || {})) if (opts.voiceAssign[k] === name) delete opts.voiceAssign[k];
+    saveOpts(); await loadLib(); renderMain();
+  }
+  async function recSave(name) {
+    const v = await voiceData(name); if (!v) return;
+    const ext = /mp4|m4a|aac/i.test(v.mime) ? 'm4a' : /ogg/i.test(v.mime) ? 'ogg' : /wav/i.test(v.mime) ? 'wav' : /mpeg|mp3/i.test(v.mime) ? 'mp3' : 'webm';
+    const a = document.createElement('a'); a.href = 'data:' + v.mime + ';base64,' + v.b64; a.download = 'poker-angel-voice-' + String(name || myName() || 'me').replace(/\W+/g, '_') + '.' + ext;
     document.body.appendChild(a); a.click(); a.remove();
     toast(ON_PHONE ? 'Saved — share the file to your PC, then Import it in Poker Angel there' : 'Recording saved', 'green');
   }
@@ -2338,28 +2374,58 @@ const Trainer = (() => {
     if (!mime || /x-m4a|aac/.test(mime)) mime = /\.(m4a|aac|mp4)$/i.test(file.name) ? 'audio/mp4' : /\.mp3$/i.test(file.name) ? 'audio/mpeg' : /\.wav$/i.test(file.name) ? 'audio/wav' : /\.ogg$/i.test(file.name) ? 'audio/ogg' : /\.webm$/i.test(file.name) ? 'audio/webm' : mime;
     if (!/^audio\/(webm|ogg|mp4|mpeg|wav|x-wav|flac)/.test(mime)) { toast('That isn’t an audio file the table voice can use (m4a, mp3, wav, ogg or webm)', 'red'); return; }
     if (file.size > 8 * 1024 * 1024) { toast('That recording is too big — keep it under a minute', 'red'); return; }
+    const name = recName();
     const fr = new FileReader();
     fr.onload = () => {
       const m = String(fr.result).match(/^data:[^;]*;base64,(.+)$/); if (!m) return;
       const probe = new Audio('data:' + mime + ';base64,' + m[1]);
-      const done = secs => { myVoice = { mime, b64: m[1], hash: hashOf(m[1]), secs: secs || 0, when: Date.now() }; try { ls(TVOICE_KEY, JSON.stringify(myVoice)); } catch (e) {} toast('🎙 Recording imported' + (secs ? ' (' + secs + ' s)' : ''), 'green'); renderMain(); };
+      const done = secs => keepVoice({ mime, b64: m[1], hash: hashOf(m[1]), secs: secs || 0, when: Date.now() }, name);
       probe.onloadedmetadata = () => done(isFinite(probe.duration) ? Math.round(probe.duration) : 0);
       probe.onerror = () => done(0);
     };
     fr.readAsDataURL(file);
   }
-  const voicePayload = () => (myVoice && opts.voiceConsent ? { t: 'voice', name: myName(), mime: myVoice.mime, b64: myVoice.b64, hash: myVoice.hash } : null);
+  async function recClone(name) {
+    try { const r = await window.api.voicesClone({ name }); await loadLib(); toast('🎙 ' + name + ' is ready to use' + (r.reused ? '' : ''), 'green'); renderMain(); }
+    catch (e) { toast(name + ': ' + cleanErr(e), 'red'); }
+  }
+  // What goes to the host when you join: the chosen library voice (desktop) or the browser's recording (web).
+  async function voicePayload() {
+    if (!opts.voiceConsent) return null;
+    const v = HAS_LIB ? (opts.myVoiceName ? await voiceData(opts.myVoiceName) : null) : myVoice;
+    return v ? { t: 'voice', name: myName(), mime: v.mime, b64: v.b64, hash: v.hash } : null;
+  }
+  const libVoiceId = name => { const v = voiceLib.find(x => x.name === name); return v && v.voiceId || ''; };
   function voiceRecHtml() {
     if (!CAN_RECORD) return '';
-    const when = myVoice ? new Date(myVoice.when).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : '';
-    return '<div class="tr-q tr-rec"><b>🎙 My table voice</b> — read this paragraph once (about 25 seconds). When you join a friend’s table it goes to the host, whose ElevenLabs account gives your character your own voice for the table talk. '
-      + (HAS_TTS() ? 'As a host, your own recording voices your seat too. ' : '')
-      + (ON_PHONE ? 'You’re on a phone — a good microphone. Record here, then either join the table from this phone, or Save the recording, share it to your PC and Import it in Poker Angel there.' : 'A phone’s microphone is usually better than a PC’s: open the web version on your phone, record there, Save, share the file to this PC and Import it here.')
-      + '<div class="tr-para">' + esc(VOICE_PARA) + '</div>'
-      + '<div class="tr-row">' + (rec.r ? '<button class="fold" data-act="rec:stop">⏹ Stop</button><span class="tr-dim">Recording… <b id="trRecTime">0 s</b></span>'
-        : '<button data-act="rec:start">' + (myVoice ? '🎙 Record again' : '🎙 Record') + '</button>' + (myVoice ? '<button class="ghost" data-act="rec:play">▶ Play back</button><button class="ghost" data-act="rec:save">⬇ Save</button><button class="ghost" data-act="rec:delete">Delete</button><span class="tr-dim">' + (myVoice.secs ? 'Recorded ' + myVoice.secs + ' s on ' : 'Imported on ') + esc(when) + '.</span>' : '')
-          + '<button class="ghost" data-act="rec:import">📂 Import a recording</button><input type="file" id="trRecFile" accept="audio/*,.m4a,.mp3,.wav,.ogg,.webm" style="display:none" />')
-      + '</div><label class="tr-dim"><input type="checkbox" data-opt="voiceConsent"' + (opts.voiceConsent ? ' checked' : '') + ' /> I agree that this recording may be sent to the host of a table I join, and cloned on their ElevenLabs account to voice my character at that table.</label></div>';
+    const fmtWhen = w => new Date(w).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+    const recRow = rec.r ? '<button class="fold" data-act="rec:stop">⏹ Stop</button><span class="tr-dim">Recording ' + esc(rec.name || '') + '… <b id="trRecTime">0 s</b></span>'
+      : (HAS_LIB ? '<input id="trVoiceName" placeholder="Name this voice (e.g. Mum)" maxlength="16" style="width:170px" value="' + esc(voiceLib.length ? '' : myName()) + '" />' : '')
+        + '<button data-act="rec:start">🎙 Record</button><button class="ghost" data-act="rec:import">📂 Import a recording</button><input type="file" id="trRecFile" accept="audio/*,.m4a,.mp3,.wav,.ogg,.webm" style="display:none" />';
+    let list = '';
+    if (HAS_LIB) {
+      list = voiceLib.length ? '<div class="tr-voices">' + voiceLib.map(v => '<div class="tr-vrow"><label title="Sent to the host when you join a table — your character speaks as you"><input type="radio" name="trMyVoice" data-myvoice="' + esc(v.name) + '"' + (opts.myVoiceName === v.name ? ' checked' : '') + ' /> mine</label>'
+        + '<b>' + esc(v.name) + '</b><span class="tr-dim">' + (v.secs ? v.secs + ' s · ' : '') + fmtWhen(v.when) + ' · ' + (v.voiceId ? '✅ ready' : HAS_TTS() || voiceCfg.hasTtsKey ? '<button class="ghost tr-mini" data-act="rec:clone" data-name="' + esc(v.name) + '">Clone on ElevenLabs</button>' : 'saved; cloned once ElevenLabs is set up') + '</span>'
+        + '<span class="tr-vbtns"><button class="ghost tr-mini" data-act="rec:play" data-name="' + esc(v.name) + '">▶</button><button class="ghost tr-mini" data-act="rec:save" data-name="' + esc(v.name) + '" title="Save as a file">⬇</button><button class="ghost tr-mini" data-act="rec:delete" data-name="' + esc(v.name) + '" title="Delete this voice (and its clone)">✖</button></span></div>').join('') + '</div>'
+        : '<div class="tr-dim">No voices yet.</div>';
+    } else if (myVoice) {
+      list = '<div class="tr-vrow"><b>My table voice</b><span class="tr-dim">' + (myVoice.secs ? 'Recorded ' + myVoice.secs + ' s on ' : 'Imported on ') + fmtWhen(myVoice.when) + '</span><span class="tr-vbtns"><button class="ghost tr-mini" data-act="rec:play">▶ Play back</button><button class="ghost tr-mini" data-act="rec:save">⬇ Save</button><button class="ghost tr-mini" data-act="rec:delete">Delete</button></span></div>';
+    }
+    return '<div class="tr-q tr-rec"><b>🎙 Voices</b> — ' + (HAS_LIB ? 'record as many as you like (you, family, friends), each with a name. Each is cloned on your ElevenLabs account, then you can give it to any character at the table (🎭 below), choose it as the coach’s voice in ⚙ Settings → Voice, or mark it “mine” to be sent to a table you join. ' : 'read the paragraph once (about 25 seconds). When you join a friend’s table it goes to the host, whose ElevenLabs account gives your character your own voice. ')
+      + (ON_PHONE ? 'You’re on a phone — a good microphone. Record here, then join the table from this phone, or Save the file, share it to the PC and Import it there.' : 'A phone’s microphone is usually better than a PC’s: open the web version on your phone, record there, Save, share the file to this PC and Import it here.')
+      + '<div class="tr-para">' + esc(VOICE_PARA) + '</div><div class="tr-row">' + recRow + '</div>' + list
+      + '<label class="tr-dim"><input type="checkbox" data-opt="voiceConsent"' + (opts.voiceConsent ? ' checked' : '') + ' /> I agree that a recording marked “mine” may be sent to the host of a table I join, and cloned on their ElevenLabs account to voice my character at that table.</label></div>'
+      + assignHtml();
+  }
+  // 🎭 which voice each character at the table speaks with (the bots by name; friends bring their own)
+  function assignHtml() {
+    if (!HAS_LIB) return '';
+    const ready = voiceLib.filter(v => v.voiceId);
+    if (!ready.length) return '';
+    const names = (g ? g.players.filter(p => p.style).map(p => p.name) : []).concat(BOTS).filter((n, i, arr) => arr.indexOf(n) === i);
+    const assign = opts.voiceAssign || {};
+    return '<div class="tr-q tr-assign"><b>🎭 Who speaks with which voice</b> — the characters at the table talk in these voices (🗣 Table chatter). The coach’s own voice is set in ⚙ Settings → Voice, where your recordings are listed too (★).'
+      + '<div class="tr-grid2">' + names.map(n => '<label>' + esc(n) + ' <select data-sel="assign" data-name="' + esc(n) + '"><option value="">a stock voice</option>' + ready.map(v => '<option value="' + esc(v.name) + '"' + (assign[n] === v.name ? ' selected' : '') + '>' + esc(v.name) + '</option>').join('') + '</select></label>').join('') + '</div></div>';
   }
 
   // ---- 🗣 table talk and 🎧 room sound ----
@@ -2407,6 +2473,7 @@ const Trainer = (() => {
   }
   function voiceFor(p) {
     if (room && room.voices && room.voices[p.name]) return room.voices[p.name];
+    const chosen = opts.voiceAssign && opts.voiceAssign[p.name] && libVoiceId(opts.voiceAssign[p.name]); if (chosen) return chosen;
     if (!p.style || !stockVoices || !stockVoices.length) return null;              // a person without a recording stays silent
     const fem = FEMALE.test(p.name), pool = stockVoices.filter(v => fem ? /female/i.test(v.about) : /(^|[^e])male/i.test(v.about));
     const list = pool.length ? pool : stockVoices;
@@ -3441,7 +3508,7 @@ const Trainer = (() => {
       if (v === 'start' || v === 'again') return startTournament();
       if (v === 'menu') { freshTable(); broadcast(); renderPlay(); }
     },
-    rec: v => { if (v === 'start') recStart(); else if (v === 'stop') recStop(); else if (v === 'play') recPlayback(); else if (v === 'save') recSave(); else if (v === 'delete') recDelete(); else if (v === 'import') { const f = $('trRecFile'); if (f) { f.onchange = () => { recImport(f.files && f.files[0]); f.value = ''; }; f.click(); } } },
+    rec: (v, b) => { const n = b && b.dataset.name; if (v === 'start') recStart(); else if (v === 'stop') recStop(); else if (v === 'play') recPlayback(n); else if (v === 'save') recSave(n); else if (v === 'delete') recDelete(n); else if (v === 'clone') recClone(n); else if (v === 'import') { const f = $('trRecFile'); if (f) { f.onchange = () => { recImport(f.files && f.files[0]); f.value = ''; }; f.click(); } } },
     room: v => {
       const nameIn = $('trName');
       if (nameIn) ls(NAME_KEY, String(nameIn.value || '').trim().slice(0, 16));
@@ -3488,6 +3555,7 @@ const Trainer = (() => {
     const nav = $('navTrainer'); if (nav) nav.classList.remove('on');
   }
   function wire() {
+    loadLib().then(() => { if (shown && tab === 'play' && !g) renderPlay(); });
     document.addEventListener('click', () => { if (actx && actx.state === 'suspended') actx.resume().catch(() => {}); }, true);
     loadVoiceCfg();
     if (CAN_SPEAK) { try { speechSynthesis.onvoiceschanged = () => { if (shown && tab === 'play') renderPlay(); }; } catch (e) {} }
@@ -3508,6 +3576,8 @@ const Trainer = (() => {
       if (sel && sel.dataset.sel === 'voice') { opts.voice = sel.value; saveOpts(); speak(VOICE_SAMPLE); return; }
       if (sel && sel.dataset.sel === 'speakRate') { opts.speakRate = parseFloat(sel.value) || 1; saveOpts(); speak(VOICE_SAMPLE); return; }
       if (sel && /^(chatterVol|chatterOften|roomVol)$/.test(sel.dataset.sel)) { opts[sel.dataset.sel] = sel.value; saveOpts(); roomSync(); chatterSchedule(); return; }
+      if (sel && sel.dataset.sel === 'assign') { opts.voiceAssign = opts.voiceAssign || {}; if (sel.value) opts.voiceAssign[sel.dataset.name] = sel.value; else delete opts.voiceAssign[sel.dataset.name]; saveOpts(); return; }
+      const mv = pick(e, 'data-myvoice'); if (mv) { opts.myVoiceName = mv.dataset.myvoice; saveOpts(); return; }
       const b = pick(e, 'data-opt'); if (!b) return;
       opts[b.dataset.opt] = !!b.checked; saveOpts();
       if (b.dataset.opt === 'showBots') renderPlay();
@@ -3530,7 +3600,7 @@ const Trainer = (() => {
   }
 
   // ⚙ Settings changed the voice: pick the new one up (app.js calls this when the dialog closes).
-  function voiceChanged() { loadVoiceCfg().then(() => { ttsFails = 0; stockVoices = null; chatterSchedule(); if (shown && tab === 'play') renderPlay(); }); }
+  function voiceChanged() { Promise.all([loadVoiceCfg(), loadLib()]).then(() => { ttsFails = 0; stockVoices = null; chatterSchedule(); if (shown && tab === 'play') renderPlay(); }); }
   return {
     wire, open, close, voiceChanged, voiceLabel,
     _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech, storyHtml, levelWhy, COACH_LEVELS, primerHtml, HAND_RANKS, rankOf, REMARKS, pickRemark, INVITE, VOICE_PARA, setLevelForTest: v => { opts.level = v; } },
