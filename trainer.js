@@ -2400,6 +2400,73 @@ const Trainer = (() => {
     const v = HAS_LIB ? (opts.myVoiceName ? await voiceData(opts.myVoiceName) : null) : myVoice;
     return v ? { t: 'voice', name: myName(), mime: v.mime, b64: v.b64, hash: v.hash } : null;
   }
+  // ---- 📲 voices from a phone ----
+  // The PC opens a short code (a PeerJS id, like a table code). On the phone, the web page's Voices
+  // block has "Send to a PC": type the code, name the voice, record, send. The PC saves it into the
+  // library (and clones it) — as many as you like, one after another. Direct phone-to-PC; the PeerJS
+  // server only introduces them.
+  let inbox = null;                // PC: { code, peer, got: [] }
+  let sendTo = null;               // phone: { code, peer, conn, status }
+  function inboxOpen() {
+    if (!HAS_LIB || inbox || typeof Peer !== 'function') { if (typeof Peer !== 'function') toast('The connection library didn’t load', 'red'); return; }
+    const code = newCode(), peer = new Peer(PEER_PREFIX + 'v-' + code.toLowerCase());
+    inbox = { code, peer, got: [], status: 'Opening…' };
+    peer.on('open', () => { if (inbox && inbox.peer === peer) { inbox.status = ''; renderMain(); } });
+    peer.on('connection', conn => {
+      conn.on('data', async m => {
+        if (!m || m.t !== 'voicefile' || typeof m.b64 !== 'string' || m.b64.length > 12e6) return;
+        const name = String(m.name || '').replace(/[^\w .'-]/g, '').trim().slice(0, 16) || 'Voice';
+        try {
+          const r = await window.api.voicesSave({ name, mime: String(m.mime || ''), b64: m.b64, secs: Number(m.secs) || 0, hash: String(m.hash || ''), append: !!m.append });
+          await loadLib(); if (inbox) inbox.got.push(name);
+          try { conn.send({ t: 'ok', name, cloned: !!r.voiceId, error: r.cloneError || '' }); } catch (e) {}
+          toast('📲 ' + name + ' received from the phone' + (r.voiceId ? ' and ready to use' : ''), 'green'); renderMain();
+        } catch (e) { try { conn.send({ t: 'fail', error: cleanErr(e) }); } catch (x) {} toast('📲 ' + name + ': ' + cleanErr(e), 'red'); }
+      });
+    });
+    peer.on('error', e => { if (!inbox || inbox.peer !== peer) return; if (e && e.type === 'unavailable-id') { inboxClose(true); inboxOpen(); return; } inbox.status = 'Connection trouble: ' + (e && (e.type || e.message)); renderMain(); });
+    renderMain();
+  }
+  function inboxClose(quiet) { if (!inbox) return; try { inbox.peer.destroy(); } catch (e) {} inbox = null; if (!quiet) renderMain(); }
+  function inboxHtml() {
+    if (!HAS_LIB || typeof Peer !== 'function') return '';
+    if (!inbox) return '<div class="tr-row"><button class="ghost" data-act="rec:inbox">📲 Receive voices from a phone</button><span class="tr-dim">Use the phone’s microphone: record each person on the phone and send straight to this PC.</span></div>';
+    return '<div class="tr-inbox"><b>📲 Ready for the phone</b>' + (inbox.status ? '<div class="tr-dim">' + esc(inbox.status) + '</div>' : '<div>On the phone, open <b>' + esc(PUBLIC_URL) + '</b>, go to 🎙 Voices → <b>Send to a PC</b>, and enter the code <b class="tr-code">' + esc(inbox.code) + '</b>. Record each voice there; it arrives here' + (HAS_TTS() ? ' and is cloned' : '') + ' straight away.</div>')
+      + (inbox.got.length ? '<div class="tr-dim">Received: ' + esc(inbox.got.join(', ')) + '</div>' : '') + '<div class="tr-row"><button class="ghost tr-mini" data-act="rec:inboxclose">Done</button></div></div>';
+  }
+  // the phone side
+  function sendConnect(code) {
+    code = String(code || '').trim().toUpperCase();
+    if (!/^[A-Z2-9]{5}$/.test(code)) { toast('Enter the 5-letter code shown on the PC', 'red'); return; }
+    if (typeof Peer !== 'function') { toast('The connection library didn’t load', 'red'); return; }
+    if (sendTo) { try { sendTo.peer.destroy(); } catch (e) {} }
+    const peer = new Peer();
+    sendTo = { code, peer, conn: null, status: 'Connecting to PC ' + code + '…' }; renderMain();
+    const giveUp = setTimeout(() => { if (sendTo && sendTo.peer === peer && !sendTo.conn) { sendTo.status = 'No PC is listening under ' + code + ' — press 📲 Receive voices on the PC first.'; renderMain(); } }, 15000);
+    peer.on('open', () => {
+      const conn = peer.connect(PEER_PREFIX + 'v-' + code.toLowerCase(), { reliable: true });
+      conn.on('open', () => { clearTimeout(giveUp); if (sendTo && sendTo.peer === peer) { sendTo.conn = conn; sendTo.status = ''; renderMain(); } });
+      conn.on('data', m => { if (!m || !sendTo) return; if (m.t === 'ok') { sendTo.status = '✅ ' + m.name + ' is on the PC' + (m.cloned ? ' and ready' : '') + '. Record the next one.'; myVoice = null; try { localStorage.removeItem(TVOICE_KEY); } catch (e) {} } else if (m.t === 'fail') sendTo.status = '❌ ' + m.error; renderMain(); });
+      conn.on('close', () => { if (sendTo && sendTo.peer === peer) { sendTo.status = 'The PC closed the connection.'; sendTo.conn = null; renderMain(); } });
+    });
+    peer.on('error', e => { clearTimeout(giveUp); if (sendTo && sendTo.peer === peer) { sendTo.status = e && e.type === 'peer-unavailable' ? 'No PC is listening under ' + code + ' — press 📲 Receive voices on the PC first.' : 'Couldn’t connect: ' + (e && (e.type || e.message)); renderMain(); } });
+  }
+  function sendVoice() {
+    if (!sendTo || !sendTo.conn || !sendTo.conn.open) { toast('Connect to the PC first', 'red'); return; }
+    if (!myVoice) { toast('Record a voice first', 'red'); return; }
+    const name = recName();
+    try { sendTo.conn.send({ t: 'voicefile', name, mime: myVoice.mime, b64: myVoice.b64, secs: myVoice.secs, hash: myVoice.hash }); sendTo.status = 'Sending ' + name + '…'; renderMain(); }
+    catch (e) { toast('Couldn’t send: ' + cleanErr(e), 'red'); }
+  }
+  function sendHtml() {
+    if (HAS_LIB || !CAN_RECORD || typeof Peer !== 'function') return '';
+    return '<div class="tr-inbox"><b>📲 Send to a PC</b> <span class="tr-dim">On the PC’s Poker Angel press “Receive voices from a phone”, then enter its code here. Name each voice, record, send — then the next.</span>'
+      + '<div class="tr-row"><input id="trSendCode" placeholder="PC code" maxlength="5" style="width:110px;text-transform:uppercase" value="' + esc(sendTo ? sendTo.code : '') + '" /><button class="ghost" data-act="rec:connect">' + (sendTo && sendTo.conn ? 'Connected ✓' : 'Connect') + '</button>'
+      + '<input id="trVoiceName" placeholder="Name this voice (e.g. Mum)" maxlength="16" style="width:170px" />'
+      + (myVoice && sendTo && sendTo.conn ? '<button data-act="rec:send">📤 Send to PC</button>' : '') + '</div>'
+      + (sendTo && sendTo.status ? '<div class="tr-dim">' + esc(sendTo.status) + '</div>' : '') + '</div>';
+  }
+  const PUBLIC_URL = 'frankthedog.github.io/poker-angel';
   const libVoiceId = name => { const v = voiceLib.find(x => x.name === name); return v && v.voiceId || ''; };
   function voiceRecHtml() {
     if (!CAN_RECORD) return '';
@@ -2417,8 +2484,9 @@ const Trainer = (() => {
       list = '<div class="tr-vrow"><b>My table voice</b><span class="tr-dim">' + (myVoice.secs ? 'Recorded ' + myVoice.secs + ' s on ' : 'Imported on ') + fmtWhen(myVoice.when) + '</span><span class="tr-vbtns"><button class="ghost tr-mini" data-act="rec:play">▶ Play back</button><button class="ghost tr-mini" data-act="rec:save">⬇ Save</button><button class="ghost tr-mini" data-act="rec:delete">Delete</button></span></div>';
     }
     return '<div class="tr-q tr-rec"><b>🎙 Voices</b> — ' + (HAS_LIB ? 'record as many as you like (you, family, friends), each with a name. Each is cloned on your ElevenLabs account, then you can give it to any character at the table (🎭 below), choose it as the coach’s voice in ⚙ Settings → Voice, or mark it “mine” to be sent to a table you join. ' : 'read the paragraph once (about 25 seconds). When you join a friend’s table it goes to the host, whose ElevenLabs account gives your character your own voice. ')
-      + (ON_PHONE ? 'You’re on a phone — a good microphone. Record here, then join the table from this phone, or Save the file, share it to the PC and Import it there.' : 'A phone’s microphone is usually better than a PC’s: open the web version on your phone, record there, Save, share the file to this PC and Import it here.')
+      + (ON_PHONE ? 'You’re on a phone — a good microphone. Record here and send each voice straight to the PC (📲 below), or join a table from this phone.' : 'A phone’s microphone is usually better than a PC’s: press 📲 Receive voices from a phone below, then record on the phone and each voice arrives here.')
       + '<div class="tr-para">' + esc(rec.r && rec.append ? VOICE_PARA2 : VOICE_PARA) + '</div>' + (rec.r && rec.append ? '<div class="tr-dim">Second take: a different paragraph, with questions and numbers, so the clone hears more of the voice.</div>' : '') + '<div class="tr-row">' + recRow + '</div>' + list
+      + inboxHtml() + sendHtml()
       + '<label class="tr-dim"><input type="checkbox" data-opt="voiceConsent"' + (opts.voiceConsent ? ' checked' : '') + ' /> I agree that a recording marked “mine” may be sent to the host of a table I join, and cloned on their ElevenLabs account to voice my character at that table.</label></div>'
       + assignHtml();
   }
@@ -3590,7 +3658,7 @@ const Trainer = (() => {
       if (v === 'start' || v === 'again') return startTournament();
       if (v === 'menu') { freshTable(); broadcast(); renderPlay(); }
     },
-    rec: (v, b) => { const n = b && b.dataset.name; if (v === 'start') recStart(); else if (v === 'stop') recStop(); else if (v === 'play') recPlayback(n); else if (v === 'save') recSave(n); else if (v === 'delete') recDelete(n); else if (v === 'clone') recClone(n); else if (v === 'more') recStart(n, true); else if (v === 'import') { const f = $('trRecFile'); if (f) { f.onchange = () => { recImport(f.files && f.files[0]); f.value = ''; }; f.click(); } } },
+    rec: (v, b) => { const n = b && b.dataset.name; if (v === 'start') recStart(); else if (v === 'stop') recStop(); else if (v === 'play') recPlayback(n); else if (v === 'save') recSave(n); else if (v === 'delete') recDelete(n); else if (v === 'clone') recClone(n); else if (v === 'more') recStart(n, true); else if (v === 'inbox') inboxOpen(); else if (v === 'inboxclose') inboxClose(); else if (v === 'connect') sendConnect(($('trSendCode') || {}).value); else if (v === 'send') sendVoice(); else if (v === 'import') { const f = $('trRecFile'); if (f) { f.onchange = () => { recImport(f.files && f.files[0]); f.value = ''; }; f.click(); } } },
     room: v => {
       const nameIn = $('trName');
       if (nameIn) ls(NAME_KEY, String(nameIn.value || '').trim().slice(0, 16));
