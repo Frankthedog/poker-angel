@@ -2299,7 +2299,7 @@ const Trainer = (() => {
   const TVOICE_KEY = 'pokerangel.tablevoice', TVOICE_MAX_S = 60, TVOICE_MIN_S = 12;
   const VOICE_PARA = 'Evening, everyone. Shuffle up and deal. I’ve got a feeling about tonight — the cards have been kind to me all week, and I’m not about to argue with them. Pass the chips, pour me something warm, and let’s see a flop. If you bet into me, I might just call; if you check, I might just bet. Either way, no hard feelings — it’s only a game, and it’s a good one.';
   let myVoice = null; try { myVoice = JSON.parse(ls(TVOICE_KEY) || 'null'); } catch (e) { myVoice = null; }
-  const HAS_LIB = !!(window.api && window.api.voicesList);
+  const HAS_LIB = typeof window !== 'undefined' && !!(window.api && window.api.voicesList);
   let voiceLib = [];                                                          // desktop: [{ name, mime, secs, when, hash, voiceId }]
   async function loadLib() {
     if (!HAS_LIB) return;
