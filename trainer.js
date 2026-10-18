@@ -1064,7 +1064,7 @@ const Trainer = (() => {
   const DEF_STATS = () => ({ hands: 0, net: 0, vpip: 0, pfr: 0, good: 0, ok: 0, bad: 0, loss: 0, hints: 0, leaks: {}, drills: { pre: [0, 0], odds: [0, 0], eq: [0, 0, 0], outs: [0, 0], sd: [0, 0], pf: [0, 0], icm: [0, 0, 0] } });
   const ls = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) {} return null; };
   const load = (k, def) => { try { const v = JSON.parse(ls(k) || 'null'); return v ? Object.assign(def, v) : def; } catch (e) { return def; } };
-  let stats = load(STATS_KEY, DEF_STATS()), opts = load(OPT_KEY, { showBots: false, pause: true });
+  let stats = load(STATS_KEY, DEF_STATS()), opts = load(OPT_KEY, { showBots: false, pause: true, advise: true });
   stats.drills = Object.assign(DEF_STATS().drills, stats.drills);   // stats saved before a drill existed still load
   const saveStats = () => ls(STATS_KEY, JSON.stringify(stats)), saveOpts = () => ls(OPT_KEY, JSON.stringify(opts));
   let shown = false, tab = 'play', g = null, token = 0, decisions = [], chartView = 'rfi.UTG';
@@ -1300,12 +1300,44 @@ const Trainer = (() => {
     for (const o of list) o.best = o.kind === best && (o.kind !== 'raise' || sp ? (o.kind !== 'raise' || o.to >= L.maxTo - 0.01) : /recommended/.test(o.note));
     if (best === 'raise' && !list.some(o => o.best)) { const r = list.filter(o => o.kind === 'raise'); if (r.length) r[0].best = true; }
     const detail = detailFor(g, me, E);
-    _advice = { key, detail, best: best === 'raise' ? (sp ? 'all-in' : verbOf('raise', s) + (adv ? ' (' + adv.rec + ')' : '')) : best, why: why + (adv && best === 'raise' ? '\nBet size: ' + adv.rec + '. ' + adv.why : ''), list };
+    const pickd = list.find(o => o.best), m = pickd && /^(.+?) · (\S+)$/.exec(pickd.label);
+    const doTxt = !pickd ? best : m ? 'Bet ' + m[2] + ' (' + m[1] + ')' : pickd.label;        // "¾ pot · 6bb" → "Bet 6bb (¾ pot)"; "Raise to 2.5bb"; "Call 3bb"; "Check"; "Fold"
+    _advice = { key, detail, do: doTxt, best: best === 'raise' ? (sp ? 'all-in' : verbOf('raise', s) + (adv ? ' (' + adv.rec + ')' : '')) : best, why: why + (adv && best === 'raise' ? '\nBet size: ' + adv.rec + '. ' + adv.why : ''), list };
     return _advice;
+  }
+  const Trainer_g = () => g, Trainer_me = () => me;
+  // ---- what has happened so far this hand, for the moment it's your turn ----
+  // Street by street from the log: runs of folds collapsed, you named "You", the board as it came out,
+  // then the pot, who's still in and what you're facing — so the decision can be read without
+  // scanning the table.
+  function storyHtml(G, M) {
+    const g = G || Trainer_g(), me = M == null ? Trainer_me() : M;   // the live hand unless a test passes one in
+    if (!g || g.over || me < 0 || g.toAct !== me) return '';
+    const name = i => i === me ? 'You' : g.players[i].name + ' (' + posOf(g, i) + ')';
+    const verb = l => l.i === me ? l.txt.replace(/^(posts|folds|calls|checks|bets|raises)/, (_, v) => ({ posts: 'post', folds: 'fold', calls: 'call', checks: 'check', bets: 'bet', raises: 'raise' }[v])) : l.txt;
+    const streets = [];
+    for (let st = 0; st <= g.street; st++) {
+      const acts = g.log.filter(l => l.st === st && l.kind !== 'post');
+      const b = st === 1 ? g.board.slice(0, 3) : st === 2 ? g.board.slice(0, 4) : st === 3 ? g.board : [];
+      const parts = [];
+      for (let k = 0; k < acts.length; k++) {
+        if (acts[k].kind === 'fold' && acts[k].i !== me) {                       // "3 fold" instead of three names
+          let n = 0; while (k + n < acts.length && acts[k + n].kind === 'fold' && acts[k + n].i !== me) n++;
+          parts.push(n === 1 ? name(acts[k].i) + ' folds' : n + ' fold');
+          k += n - 1;
+        } else parts.push(name(acts[k].i) + ' ' + verb(acts[k]));
+      }
+      if (!parts.length && st === g.street) parts.push(st === 0 ? 'First to act is you.' : 'Checked to you first.');
+      streets.push('<div><b class="tr-lbl">' + STREET[st] + (b.length ? ' ' + b.map(c => cardHtml(c)).join('') : '') + '</b> ' + esc(plain(parts.join(' · '))) + (parts.length ? '.' : '') + '</div>');
+    }
+    const L = legal(g, me), live = g.players.filter((q, j) => j !== me && !q.folded && !q.out).length;
+    const facing = L.toCall > 0 ? 'Facing ' + bbs(L.toCall) + ' to call' + (g.players.filter(q => q.allin && !q.folded).length ? ' (someone is all-in)' : '') : 'No bet to you';
+    const now = 'Pot ' + bbs(r2(L.pot)) + ' · ' + live + ' opponent' + (live === 1 ? '' : 's') + ' still in · ' + facing + '.';
+    return '<div class="tr-explain tr-story"><b>📜 So far this hand</b>' + streets.join('') + '<div class="tr-now">' + esc(plain(now)) + '</div></div>';
   }
   function adviceHtml() {
     const a = adviceNow(); if (!a) return '';
-    return '<div class="tr-advice"><b>' + esc(plain('Before you act · Best play: ' + a.best)) + '</b><div class="tr-why">' + fmtWhy(a.why) + '</div>' + detailHtml(a.detail, true)
+    return '<div class="tr-advice"><b>' + esc(plain('Your turn · ' + a.do)) + '</b><div class="tr-why">' + fmtWhy(a.why) + '</div>' + detailHtml(a.detail, true)
       + '<div class="tr-optlist"><span class="tr-dim">Your options:</span>' + a.list.map(o => '<div class="tr-opt' + (o.best ? ' best' : '') + '"><b>' + esc(plain(o.label)) + '</b>' + (o.best ? '<span class="tr-tag">Recommended</span>' : '') + '<span>' + esc(plain(o.note)) + '</span></div>').join('') + '</div></div>';
   }
   function hint() {
@@ -1984,7 +2016,7 @@ const Trainer = (() => {
             + '<div class="tr-q" style="margin-top:6px"><b>…or a tournament</b> for the whole table:</div>' + tourOptsHtml() + '<div class="tr-row"><button data-act="tour:start">🏆 Start a tournament</button></div>' : '') + '</div>';
         renderSpot(); return;
       }
-      m.innerHTML = '<div class="tr-drill">' + dailyHtml() + '<div class="tr-q"><b>Play 8-handed No-Limit Hold’em.</b><br>Blinds 0.5/1, everyone 100bb deep every hand. Bots play real styles — tight, loose, passive, a calling station, a maniac — and their style is on their seat, so you can practise adjusting to it.<br><br>Every decision is graded on the right as it’s made: preflop against the charts, after the flop on equity against what each opponent’s actions say they hold, and the pot odds. 💡 Hint shows the lean before you act; when a hand ends the AI coach can talk you through it.</div>'
+      m.innerHTML = '<div class="tr-drill">' + dailyHtml() + '<div class="tr-q"><b>Play 8-handed No-Limit Hold’em.</b><br>Blinds 0.5/1, everyone 100bb deep every hand. Bots play real styles — tight, loose, passive, a calling station, a maniac — and their style is on their seat, so you can practise adjusting to it.<br><br>Every decision is graded on the right as it’s made: preflop against the charts, after the flop on equity against what each opponent’s actions say they hold, and the pot odds. When it’s your turn, the right-hand column sums up the hand so far and says what to do, with the size; when a hand ends the AI coach can talk you through it.</div>'
         + '<div class="tr-row">' + fieldHtml() + '</div>'
         + '<div class="tr-row"><button data-act="play:next">🃏 Play cash hands against the bots</button></div>'
         + '<div class="tr-q" style="margin-top:8px"><b>🏆 Tournament</b> — a sit-and-go against the bots: blinds rise, the big blind posts an ante (as at the WSOP), players are knocked out and the top places are paid. Once stacks are short, every shove, fold and call is graded in prize money (ICM) next to the chip-only answer.</div>'
@@ -2033,7 +2065,8 @@ const Trainer = (() => {
       + (room ? '' : '<label title="Each bot move waits for Next move ▶, so you can read the comment beside the player. Untick to let the bots play at normal speed."><input type="checkbox" data-opt="stepBots"' + (opts.stepBots !== false ? ' checked' : '') + ' /> ⏯ Bots wait for Next</label>')
       + (room ? '' : '<label title="When you fold, the hand carries on one move at a time with the bots’ cards face up and each move explained."><input type="checkbox" data-opt="watch"' + (opts.watch !== false ? ' checked' : '') + ' /> 👀 Watch the bots after I fold</label>')
       + (room || T ? '' : '<label title="Like PokerStars Zoom: when you fold, the rest of the hand plays out at once and you’re dealt the next one — many more hands per hour."><input type="checkbox" data-opt="fastFold"' + (opts.fastFold ? ' checked' : '') + ' /> ⚡ Fast-fold</label>');
-    const advice = opts.advise && !holding() && !g.over && g.toAct === me ? adviceHtml() : '';
+    const myTurn = !holding() && !g.over && me >= 0 && g.toAct === me;
+    const advice = myTurn ? storyHtml() + (opts.advise ? adviceHtml() : '') : '';
     m.innerHTML = roomBar() + tourBar() + ratingsBar() + '<div class="tr-felt-wrap"><div class="tr-felt">' + felt + '</div></div>'
       + '<div class="tr-actions">' + actions + '</div>'
       + '<div class="tr-key">Key: ' + Array.from(new Set(g.players.map((q, j) => posOf(g, j)).filter(Boolean))).map(p => '<b>' + p + '</b> ' + POS_FULL[p] + (p === 'BTN' ? ' (the dealer)' : p === 'UTG' ? ' (first to act)' : '')).join(' · ') + ' · <b>bb</b> big blinds · <b>D</b> dealer button</div>'
@@ -2916,7 +2949,7 @@ const Trainer = (() => {
 
   return {
     wire, open, close,
-    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech },
+    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech, storyHtml },
   };
 })();
 
