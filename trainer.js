@@ -1186,7 +1186,8 @@ const Trainer = (() => {
     const mine = !g.over && g.toAct === me;
     if (g.street === 0) {
       head = 'A new hand';
-      body = 'Everyone has been dealt two cards face down. Only you can see ' + your + ' two — the others’ are hidden until the end. ' + (g.handNo === 1 ? 'There are ' + n + ' players at this table. ' : '')
+      const faceUp = autoOn() || opts.showBots || (room && room.faceUp);
+      body = 'Everyone has been dealt two cards face down. ' + (faceUp ? 'In a real game only you would see ' + your + ' two — here every card is face up, to help you learn. ' : 'Only you can see ' + your + ' two — the others’ are hidden until the end. ') + (g.handNo === 1 ? 'There are ' + n + ' players at this table. ' : '')
         + 'Before the deal, the two players to the left of the dealer button (the D) had to pay the blinds — forced bets of ' + sb + ' and ' + bb + ' — so there’s something to win. '
         + 'Betting goes clockwise, starting with the player after the big blind. In turn, each player either folds (throws the cards away and is out of the hand), calls (matches the biggest bet so far) or raises (bets more, so the others must pay more to stay). '
         + 'The aim right now: decide whether ' + your + ' two cards are worth paying to play.';
