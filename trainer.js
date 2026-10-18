@@ -1129,6 +1129,8 @@ const Trainer = (() => {
     return d && d.id !== ackId ? d : null;
   }
   const holding = () => !room && pauseOn() && !!myPending() && g && !g.over && !watchOn();
+  // While you're in the hand (solo), each bot move waits for Next move ▶, so its comment box can be read.
+  const stepBots = () => !room && opts.stepBots !== false && g && !g.over && me >= 0 && g.players[me] && !g.players[me].folded && !g.players[me].out && !isHuman(g.players[g.toAct]);
   let room = null;                  // { role, code, peer, conns (host: Map conn → {seat,name,pending}), conn (guest), faceUp, players }
   const shownDec = new Set();       // decisions already in my feed
   let summarized = 0, introduced = 0;
@@ -1189,6 +1191,7 @@ const Trainer = (() => {
     if (isHuman(g.players[g.toAct])) return;
     if (holding()) return;                                        // waiting for me to press Continue
     if (watching()) return;                                       // you folded: each move waits for Next
+    if (stepBots()) return;                                       // you're in: each bot move waits for Next too
     if (fastFolding()) {                                          // you've left this hand: the rest plays out at once
       let guard = 0;
       while (!g.over && guard++ < 300) { try { botMove(); } catch (e) { break; } }
@@ -1775,13 +1778,26 @@ const Trainer = (() => {
   // cards face up (you folded, or "Show the bots' cards") it's the bot's own reason; otherwise only
   // what the table can see — what that action says about their hand.
   function seatNote(i) {
-    if (i === me && me >= 0) {                                    // your own move: its grade and the gist
-      const d = decisions.filter(x => x.seat === me).pop();
-      if (g.over || !d || d.at !== g.acts.length - 1) return '';
-      const ls = String(d.G.why || '').split('\n').filter(Boolean), gist = ls.find(l => /^So:/.test(l)) || ls[0] || '';
-      // in the clear space just beyond the seat on your right (beside you it would cover that player)
-      const L = layout().seat, [x, y] = L[L.length - 1];
-      return '<div class="tr-note hero ' + d.G.v + '" style="left:calc(' + x + '% + 80px);top:' + y + '%"><b>' + esc(plain('You ' + (d.verb || d.kind) + ' · ' + d.G.head)) + '</b>' + esc(plain(gist.replace(/^So:\s*/, '').replace(/^./, c => c.toUpperCase()))) + '</div>';
+    if (i === me && me >= 0) {                                    // you: just above your cards
+      const p = g.players[me]; if (g.over || !p || !p.cards || !p.cards.length) return '';
+      const [x, y] = layout().seat[view(me)], box = (cls, head, body) => '<div class="tr-note hero ' + cls + '" style="left:' + x + '%;top:' + y + '%"><b>' + esc(plain(head)) + '</b>' + esc(plain(body)) + '</div>';
+      const d = decisions.filter(q => q.seat === me).pop();
+      if (d && d.at === g.acts.length - 1) {                      // the move you just made: its grade and the gist
+        const ls = String(d.G.why || '').split('\n').filter(Boolean), gist = ls.find(l => /^So:/.test(l)) || ls[0] || '';
+        return box(d.G.v, 'You ' + (d.verb || d.kind) + ' · ' + d.G.head, gist.replace(/^So:\s*/, '').replace(/^./, c => c.toUpperCase()));
+      }
+      if (g.toAct !== me || p.folded) return '';
+      // your turn: what you hold and what it costs — not the answer (that's 💡 Hint / "Advise me")
+      const k = cls(p.cards[0], p.cards[1]), L = legal(g, me);
+      let head, line = '';
+      if (!g.board.length) { head = handWords(k); line = strengthWord(pct()[k]).replace(/^./, c => c.toUpperCase()) + ' — #' + (PK_HAND_ORDER.indexOf(k) + 1) + ' of 169 starting hands.\n'; }
+      else {
+        const dr = draws(p.cards, g.board), bits = [handName(evalHand(p.cards.concat(g.board)))];
+        if (dr.flush) bits.push('flush draw'); if (dr.straight) bits.push('straight draw');
+        head = bits.join(' + ');
+      }
+      line += L.toCall > 0 ? 'Call ' + bbs(L.toCall) + ' into ' + bbs(L.pot) + ': you need to win ' + Math.round(L.toCall / (L.pot + L.toCall) * 100) + '% of the time.' : 'No bet to you — checking is free.';
+      return '<div class="tr-note hero turn" style="left:' + x + '%;top:' + y + '%"><b>Your turn: ' + esc(head) + '</b>' + esc(line) + '</div>';
     }
     const log = g.watchLog || [], w = log[log.length - 1];
     if (g.over || !w || w.i !== i || w.at !== g.acts.length - 1 || i === me) return '';
@@ -1980,6 +1996,8 @@ const Trainer = (() => {
       actions = '<button class="primary" data-act="play:continue">Continue ▶</button><span class="tr-dim">Read the explanation on the right first — the bots wait for you.</span>';
     } else if (watching()) {
       actions = '<button class="primary" data-act="play:wnext">Next move ▶</button><button class="ghost" data-act="play:wall">Play the hand out ▶▶</button><span class="tr-dim">You folded — ' + esc(g.players[g.toAct].name) + ' is next to act. Each player’s reason appears in a box beside them.</span>';
+    } else if (stepBots()) {
+      actions = '<button class="primary" data-act="play:wnext">Next move ▶</button><button class="ghost" data-act="play:wall">Skip to my turn ▶▶</button><span class="tr-dim">' + esc(g.players[g.toAct].name) + ' is next to act. Read the box beside each player, then press Next move.</span>';
     } else if (me < 0) actions = '<span class="tr-wait">Watching — you’re dealt in from the next ' + (T ? 'game' : 'hand') + '.</span>';
     else if (T && g.players[me].out) actions = '<span class="tr-wait">You’re out in ' + ordinal(T.place[me]) + ' — the rest plays on.</span>' + (isGuest() ? '' : '<button class="ghost" data-act="tour:menu">Leave this tournament</button>');
     else if (g.toAct !== me) actions = '<span class="tr-wait">' + (g.toAct >= 0 ? esc(g.players[g.toAct].name) + ' is thinking…' : 'Sending…') + '</span>';
@@ -1999,6 +2017,7 @@ const Trainer = (() => {
       + (CAN_SPEAK ? '<label><input type="checkbox" data-opt="speak"' + (opts.speak ? ' checked' : '') + ' /> 🔊 Read explanations aloud</label>' : '')
       + '<label><input type="checkbox" data-opt="pause"' + (pauseOn() ? ' checked' : '') + ' /> Explain after I act' + (room ? '' : ' (and pause)') + '</label>'
       + (room ? '' : '<label><input type="checkbox" data-opt="showBots"' + (opts.showBots ? ' checked' : '') + ' /> Show the bots’ cards</label>')
+      + (room ? '' : '<label title="Each bot move waits for Next move ▶, so you can read the comment beside the player. Untick to let the bots play at normal speed."><input type="checkbox" data-opt="stepBots"' + (opts.stepBots !== false ? ' checked' : '') + ' /> ⏯ Bots wait for Next</label>')
       + (room ? '' : '<label title="When you fold, the hand carries on one move at a time with the bots’ cards face up and each move explained."><input type="checkbox" data-opt="watch"' + (opts.watch !== false ? ' checked' : '') + ' /> 👀 Watch the bots after I fold</label>')
       + (room || T ? '' : '<label title="Like PokerStars Zoom: when you fold, the rest of the hand plays out at once and you’re dealt the next one — many more hands per hour."><input type="checkbox" data-opt="fastFold"' + (opts.fastFold ? ' checked' : '') + ' /> ⚡ Fast-fold</label>');
     const advice = opts.advise && !holding() && !g.over && g.toAct === me ? adviceHtml() : '';
@@ -2778,7 +2797,7 @@ const Trainer = (() => {
 
   const HANDLERS = {
     play: (v, b) => {
-      if (v === 'continue') { const p = myPending(); if (p) ackId = p.id; if (g && g.over && fastFolding()) return startHand(); renderPlay(); if (!isGuest()) step(); return; }
+      if (v === 'continue') { const p = myPending(); if (p) ackId = p.id; if (g && g.over && fastFolding()) return startHand(); renderPlay(); if (!isGuest()) { if (stepBots()) watchPlay(false); else step(); } return; }
       if (v === 'next') { const p = myPending(); if (p) ackId = p.id; if (g && g.tour && g.tour.done) freshTable(); return startHand(); }
       if (v === 'hint') return hint();
       if (v === 'wnext' || v === 'wall') return watchPlay(v === 'wall');
@@ -2882,7 +2901,7 @@ const Trainer = (() => {
       if (b.dataset.opt === 'showBots') renderPlay();
       if (b.dataset.opt === 'pause' && !b.checked && g && !g.over) step();     // un-pausing lets the bots carry on
       if (b.dataset.opt === 'advise' || b.dataset.opt === 'pause' || b.dataset.opt === 'detail') renderPlay();
-      if (b.dataset.opt === 'watch') { renderPlay(); step(); }
+      if (b.dataset.opt === 'watch' || b.dataset.opt === 'stepBots') { renderPlay(); step(); }
       if (b.dataset.opt === 'speak') { if (opts.speak) { spokenLast = ''; said = new Set(); autoSpeak(); } else hush(); }
     };
     $('trMain').onkeydown = (e) => {
