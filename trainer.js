@@ -886,6 +886,7 @@ const Trainer = (() => {
     return RANK_WORD[k[0]] + '-' + RANK_WORD[k[1]] + (k[2] === 's' ? ' suited' : k[2] === 'o' ? ' offsuit' : '');
   }
   function plain(text) {
+    if (lvlIdx() >= 3) return String(text);                    // advanced / pro: the usual shorthand stays
     const seen = new Set();
     return String(text)
       .replace(/(\d+(?:\.\d+)?)\s?bb\b/g, (m, n) => n + (Number(n) === 1 ? ' big blind' : ' big blinds'))
@@ -1011,7 +1012,7 @@ const Trainer = (() => {
 
   // Explanation text → HTML: escaped, with each line's label ("So:", "The price:") in bold.
   function fmtWhy(text) {
-    return esc(plain(text)).split('\n').map(l => l.replace(/^([A-Z][A-Za-z’' ]{1,28}):/, '<b class="tr-lbl">$1:</b>')).join('\n');
+    return esc(plain(levelWhy(text))).split('\n').map(l => l.replace(/^([A-Z][A-Za-z’' ]{1,28}):/, '<b class="tr-lbl">$1:</b>')).join('\n');
   }
 
   // The decision in front of seat i, as that player can see it (their cards; everyone else's ranges).
@@ -1066,6 +1067,145 @@ const Trainer = (() => {
   const load = (k, def) => { try { const v = JSON.parse(ls(k) || 'null'); return v ? Object.assign(def, v) : def; } catch (e) { return def; } };
   let stats = load(STATS_KEY, DEF_STATS()), opts = load(OPT_KEY, { showBots: false, pause: true, advise: true });
   stats.drills = Object.assign(DEF_STATS().drills, stats.drills);   // stats saved before a drill existed still load
+  // ---- 🎓 coaching level: who is being coached ------------------------------------------------------
+  // The same maths for everyone; what changes is how it's said. Beginners get every term explained
+  // (a "Words used" list under each explanation), the usual shorthand spelled out, and the advice shown
+  // before they act; advanced players get the shorthand and no reminders; a pro gets the answer first
+  // and the numbers, nothing else.
+  const COACH_LEVELS = [
+    ['new', 'Absolute beginner', 'Nothing assumed: every poker word is explained under each explanation, every time.'],
+    ['beginner', 'Beginner', 'Plain words throughout; each poker term is explained the first time it comes up.'],
+    ['improver', 'Improver', 'The standard explanations: the facts, the conclusion and a rule to remember.'],
+    ['advanced', 'Advanced', 'Shorter, in the usual poker shorthand (UTG, 3-bet, 94o), without the reminders.'],
+    ['pro', 'Pro', 'The answer first, then the numbers. No basics, no reminders.'],
+  ];
+  const lvl = () => COACH_LEVELS.some(l => l[0] === opts.level) ? opts.level : 'beginner';
+  const lvlIdx = () => COACH_LEVELS.findIndex(l => l[0] === lvl());
+  const lvlName = () => COACH_LEVELS[lvlIdx()][1];
+  // Poker words, in beginner's terms. Checked against each explanation; the ones it uses are listed under it.
+  const GLOSSARY = [
+    [/\b(3-bet|re-rais)/i, '3-bet (re-raise)', 'raising again after someone has already raised.'],
+    [/\b4-bet/i, '4-bet', 'the third raise in a row — a raise of a re-raise.'],
+    [/pot odds|\bthe price\b|break even/i, 'the price (pot odds)', 'what you must pay to call, compared with what you can win. Pay 3 to win 12 and you need to win 1 time in 4 — 25%.'],
+    [/chance of winning|equity/i, 'chance of winning (equity)', 'how often your hand would win if the rest of the cards were dealt out — the trainer deals the rest of the hand thousands of times to find it.'],
+    [/\bposition\b|in position|out of position|acts? (first|last|after)/i, 'position', 'where you sit compared with the dealer button. Acting after the others is better — you see what they do first.'],
+    [/\bbutton\b|\bBTN\b/i, 'the button', 'the dealer seat. It moves one seat left every hand; the player on it acts last after the flop.'],
+    [/\bblinds?\b|\bbig blinds?\b/i, 'the blinds', 'the two forced bets paid before the cards are dealt (small blind and big blind). Every amount here is measured in big blinds.'],
+    [/\blimp/i, 'limping', 'just calling the big blind before the flop instead of raising.'],
+    [/all-in/i, 'all-in', 'betting every chip you have.'],
+    [/flush draw|straight draw|\bdraws?\b|drawing hand/i, 'a draw', 'a hand that isn’t made yet but will be if the right card comes — four cards to a flush or a straight.'],
+    [/\bouts?\b/i, 'outs', 'the cards still to come that would make your hand.'],
+    [/implied odds/i, 'implied odds', 'the extra chips you can win later if your draw hits — what makes a close call worth it.'],
+    [/for value|value bet/i, 'betting for value', 'betting because you think you have the best hand and want worse hands to call.'],
+    [/semi-bluff/i, 'a semi-bluff', 'a bet with a hand that’s probably behind now but has a draw to become the best.'],
+    [/\bbluff/i, 'a bluff', 'betting with a weak hand to make better hands fold.'],
+    [/\branges?\b|likely to have|likely holds/i, 'a range', 'all the hands a player could have here, judging by how they’ve played so far.'],
+    [/overpair/i, 'an overpair', 'a pocket pair higher than every card on the board.'],
+    [/top pair/i, 'top pair', 'pairing the highest card on the board.'],
+    [/kicker/i, 'the kicker', 'your other card — it decides ties between the same pairs.'],
+    [/c-bet|continuation bet/i, 'a c-bet (continuation bet)', 'the player who raised before the flop betting again on the flop.'],
+    [/effective stack|\bSPR\b/i, 'the effective stack', 'the smaller of the two stacks in a pot — the most that can actually be won or lost.'],
+    [/\bICM\b|prize money/i, 'ICM (prize money)', 'what your chips are worth in prize money in a tournament, where staying in matters more than chips.'],
+    [/\bante/i, 'the ante', 'a small forced bet everyone pays each hand in a tournament.'],
+    [/showdown/i, 'the showdown', 'when the betting is finished and the players left turn their cards over — best hand wins.'],
+    [/suited|offsuit/i, 'suited / offsuit', 'suited = both your cards the same suit (a flush is possible); offsuit = different suits.'],
+    [/\b(flop|turn|river)\b/i, 'the flop, turn and river', 'the shared cards: the flop is the first three, the turn the fourth, the river the fifth and last.'],
+    [/\bcheck(s|ing|ed)?\b/i, 'check', 'pass without betting when nobody has bet yet; the next player acts.'],
+    [/\bfold(s|ing|ed)?\b/i, 'fold', 'give up the hand; any chips you’ve already put in stay in the pot.'],
+    [/\bcall(s|ing|ed)?\b/i, 'call', 'match the bet in front of you and stay in the hand.'],
+    [/\brais(e|es|ing|ed)\b/i, 'raise', 'put in more than the bet in front of you, so the others must pay more to stay in.'],
+    [/premium hand|strong hand|starting hand/i, 'starting hands', 'your two private cards; of the 169 kinds, pairs and two high cards of one suit are the best.'],
+  ];
+  let explained = new Set();        // beginner: each word is explained once a session
+  // An explanation, as this level should read it. Pure: the level can be passed in (tests).
+  function levelWhy(text, level) {
+    const L = level || lvl(), i = COACH_LEVELS.findIndex(l => l[0] === L);
+    let lines = String(text || '').split('\n').filter(Boolean);
+    if (i >= 3) lines = lines.filter(l => !/^Remember:/.test(l));
+    if (i >= 4) { lines = lines.filter(l => !/^Note:/.test(l)); const so = lines.findIndex(l => /^So:/.test(l)); if (so > 0) lines.unshift(lines.splice(so, 1)[0]); }
+    if (i <= 1) {
+      const body = lines.join('\n'), hits = GLOSSARY.map(gl => ({ gl, at: body.search(gl[0]) })).filter(h => h.at >= 0).sort((a, b) => a.at - b.at);
+      const fresh = i === 0 ? hits.slice(0, 4) : hits.filter(h => !explained.has(h.gl[1])).slice(0, 3);
+      if (fresh.length) { lines.push('Words used:'); fresh.forEach(h => { explained.add(h.gl[1]); lines.push('• ' + h.gl[1] + ' — ' + h.gl[2]); }); }
+    }
+    return lines.join('\n');
+  }
+  function levelSelHtml() {
+    return '<label class="tr-level" title="Changes how every explanation is written, not the advice itself">🎓 Coaching level: <select data-sel="level">' + COACH_LEVELS.map(l => '<option value="' + l[0] + '"' + (l[0] === lvl() ? ' selected' : '') + '>' + esc(l[1]) + '</option>').join('') + '</select></label>';
+  }
+  function setLevel(v) {
+    if (!COACH_LEVELS.some(l => l[0] === v)) return;
+    opts.level = v;
+    const i = lvlIdx();
+    if (i <= 1) { opts.advise = true; opts.detail = false; }       // sensible defaults for the level; the tick boxes still change them
+    if (i === 0) { opts.showBots = true; opts.pause = true; opts.stepBots = true; }   // a teaching table: every card face up, one move at a time
+    if (i === 3) opts.detail = true;
+    if (i === 4) { opts.advise = false; opts.detail = true; }
+    saveOpts(); explained = new Set(); said = new Set(); spokenLast = '';
+    toast('Coaching level: ' + lvlName() + ' — ' + COACH_LEVELS[i][2], 'green');
+    renderMain();
+  }
+  // What the AI coach is told about the student.
+  // ---- absolute beginner: the hand itself, explained as it happens ----
+  // Someone who has never played needs the deal, the blinds, the button, the order of play, what each
+  // shared card is and how the winner is decided — before any strategy. At the "Absolute beginner"
+  // level this block leads the right-hand column at every stage of every hand (and is read aloud).
+  const HAND_RANKS = [
+    ['Royal flush', 'Ten, Jack, Queen, King, Ace, all of one suit — the best hand there is.'],
+    ['Straight flush', 'five cards in a row, all of one suit.'],
+    ['Four of a kind', 'four cards of the same rank, like four Nines.'],
+    ['Full house', 'three of one rank and two of another, like three Kings and two Fours.'],
+    ['Flush', 'five cards of one suit, in any order.'],
+    ['Straight', 'five cards in a row, suits mixed, like 7-8-9-10-Jack.'],
+    ['Three of a kind', 'three cards of the same rank.'],
+    ['Two pair', 'two cards of one rank and two of another.'],
+    ['One pair', 'two cards of the same rank.'],
+    ['High card', 'none of the above — the highest card decides.'],
+  ];
+  const rankOf = name => { const n = String(name || ''); return /royal/i.test(n) ? 0 : /straight flush/i.test(n) ? 1 : /^four/i.test(n) ? 2 : /full house/i.test(n) ? 3 : /^flush/i.test(n) ? 4 : /^straight/i.test(n) ? 5 : /^three/i.test(n) ? 6 : /two pair/i.test(n) ? 7 : /pair/i.test(n) ? 8 : 9; };
+  const ranksHtml = () => '<details class="tr-ranks"><summary>The 10 kinds of hand, best first</summary><div class="tr-why">' + HAND_RANKS.map((r, k) => (k + 1) + '. <b>' + r[0] + '</b> — ' + r[1]).join('\n') + '\nA hand is always your best FIVE cards out of your two and the five shared ones.</div></details>';
+  function primerHtml(G, M) {
+    const g = G || Trainer_g(), me = M == null ? Trainer_me() : M;
+    if (lvl() !== 'new' || !g || me < 0) return '';
+    const p = g.players[me], n = g.players.length, you = autoOn() ? 'the Angel' : 'you', your = autoOn() ? 'the Angel’s' : 'your';
+    const bb = g.tour ? 'big blind' : '1 big blind', sb = g.tour ? 'half of it' : 'half a big blind';
+    let head, body;
+    if (g.over && g.result) {
+      const w = g.result.wins[0], who = w.i === me ? (autoOn() ? 'The Angel' : 'You') : g.players[w.i].name;
+      if (g.result.showdown) {
+        const r = rankOf(w.name);
+        head = 'The showdown';
+        body = 'The betting is finished and more than one player is still in, so they turn their cards over. ' + who + (w.i === me && !autoOn() ? ' win' : ' wins') + ' with ' + (w.name || 'the best hand') + ' — that’s ' + (r === 9 ? 'a high card, the lowest kind of hand' : 'a ' + HAND_RANKS[r][0].toLowerCase() + ', number ' + (r + 1) + ' of the 10 kinds of hand') + '. The pot — every chip bet during the hand — goes to the winner.';
+      } else {
+        head = 'Everyone else folded';
+        body = who + (w.i === me && !autoOn() ? ' win' : ' wins') + ' the pot without showing any cards. That’s allowed — a hand can be won without the best cards, which is why betting matters as much as the cards.';
+      }
+      return '<div class="tr-explain tr-primer"><b>🧭 ' + esc(head) + '</b><div class="tr-why">' + esc(body) + '</div>' + ranksHtml() + '</div>';
+    }
+    if (!p || !p.cards || !p.cards.length) return '';
+    const mine = !g.over && g.toAct === me;
+    if (g.street === 0) {
+      head = 'A new hand';
+      body = 'Everyone has been dealt two cards face down. Only you can see ' + your + ' two — the others’ are hidden until the end. ' + (g.handNo === 1 ? 'There are ' + n + ' players at this table. ' : '')
+        + 'Before the deal, the two players to the left of the dealer button (the D) had to pay the blinds — forced bets of ' + sb + ' and ' + bb + ' — so there’s something to win. '
+        + 'Betting goes clockwise, starting with the player after the big blind. In turn, each player either folds (throws the cards away and is out of the hand), calls (matches the biggest bet so far) or raises (bets more, so the others must pay more to stay). '
+        + 'The aim right now: decide whether ' + your + ' two cards are worth paying to play.';
+    } else if (g.street === 1) {
+      head = 'The flop';
+      body = 'Three shared cards are turned over in the middle. Everyone still in uses any of them with their own two cards to make the best five-card hand. Another round of betting now, starting with the first player still in after the dealer button. If nobody has bet yet, ' + you + ' can check — stay in without paying.';
+    } else if (g.street === 2) {
+      head = 'The turn';
+      body = 'A fourth shared card. One more round of betting. Hands that were nearly made — four to a flush, four to a straight — have one card left to come.';
+    } else {
+      head = 'The river';
+      body = 'The fifth and last shared card — no more cards to come, so what ' + you + ' hold now is what ' + you + ' finish with. After this round of betting, anyone still in shows their cards and the best five-card hand wins the pot.';
+    }
+    if (mine && !autoOn()) body += ' It’s your turn: the buttons under the table are your choices, and the one marked Recommended is the coach’s advice.';
+    return '<div class="tr-explain tr-primer"><b>🧭 ' + esc(head) + '</b><div class="tr-why">' + esc(body) + '</div>' + (g.handNo === 1 && g.street === 0 ? ranksHtml() + '<div class="tr-dim">For the whole picture, see 📘 Learn → How a hand works.</div>' : '') + '</div>';
+  }
+  const levelAiLine = () => 'THE STUDENT IS ' + ({ new: 'AN ABSOLUTE BEGINNER: explain every poker term you use in plain words, assume nothing, keep the numbers simple (e.g. "1 time in 4")',
+    beginner: 'A BEGINNER: plain words, explain each poker term the first time you use it', improver: 'AN IMPROVING PLAYER: normal coaching language',
+    advanced: 'AN ADVANCED PLAYER: be concise and use standard poker shorthand', pro: 'A PROFESSIONAL: the key numbers and the line, no basics' })[lvl()] + '.';
   const saveStats = () => ls(STATS_KEY, JSON.stringify(stats)), saveOpts = () => ls(OPT_KEY, JSON.stringify(opts));
   let shown = false, tab = 'play', g = null, token = 0, decisions = [], chartView = 'rfi.UTG';
   const drill = {};
@@ -1303,7 +1443,7 @@ const Trainer = (() => {
       const p = g.players[w.i], who = w.i === me ? 'The Angel' : p.name;
       body = '<div class="tr-why"><b class="tr-lbl">' + esc(plain(who + ' (' + posOf(g, w.i) + ') ' + w.txt)) + '</b> <span class="tr-dim">' + esc(cardsTxt(p.cards) + (w.i === me ? '' : ' · ' + botLabel(p))) + '</span></div>'
         + (w.i === me ? '<div class="tr-why">' + fmtWhy(w.why) + '</div>'
-          : '<div class="tr-why">' + esc(plain(w.why)) + (STYLE_HOW[p.style] ? '\n<i class="tr-dim">How a ' + esc(styleName(p.style)) + ' player plays: ' + esc(STYLE_HOW[p.style]) + '</i>' : '') + '</div>');
+          : '<div class="tr-why">' + esc(plain(levelWhy(w.why))) + (STYLE_HOW[p.style] ? '\n<i class="tr-dim">How a ' + esc(styleName(p.style)) + ' player plays: ' + esc(STYLE_HOW[p.style]) + '</i>' : '') + '</div>');
     } else body = (auto.intro ? '<div class="tr-why">' + (auto.calm ? 'Settle in. ' : '') + 'The Angel plays hand after hand in your seat, every card face up, and explains each move — its own and the bots’ — with the numbers and the reasons.' + (auto.endAt ? ' It will play for ' + opts.autoMins + ' minutes and then close quietly.' : '') + '</div>' : '')
       + '<div class="tr-why">' + esc(plain('New hand. The Angel is in the ' + posOf(g, me) + ' with ' + (hero && hero.cards && hero.cards.length ? cardsTxt(hero.cards) : 'no cards yet') + '.')) + '</div>';
     const sp = v => '<button class="' + (auto.speed === v ? 'primary' : 'ghost') + ' tr-mini" data-act="play:autospeed" data-v="' + v + '">' + v + '</button>';
@@ -1665,12 +1805,12 @@ const Trainer = (() => {
     const head = '<b>🤖 AI coach — hand #' + g.handNo + '</b>';
     try {
       let text;
-      if (window.api && window.api.draft) text = await window.api.draft({ system: AI_COACH, user: historyText(g, decisions) });
+      if (window.api && window.api.draft) text = await window.api.draft({ system: AI_COACH, user: levelAiLine() + '\n\n' + historyText(g, decisions) });
       else {
         // claude.ai: ask Claude on the viewer's own account (they're asked once to allow it)
         const sample = window.claude && await window.claude.use('sample');
         if (!sample) throw { code: 'not_granted' };
-        text = (await sample(AI_COACH + '\n\n' + historyText(g, decisions), { onText: ({ text: t }) => { if (ph) ph.innerHTML = head + esc(t); } })).text;
+        text = (await sample(AI_COACH + '\n\n' + levelAiLine() + '\n\n' + historyText(g, decisions), { onText: ({ text: t }) => { if (ph) ph.innerHTML = head + esc(t); } })).text;
       }
       if (ph) ph.innerHTML = head + esc(text || '(no answer)');
     } catch (e) {
@@ -2142,7 +2282,8 @@ const Trainer = (() => {
             + '<div class="tr-q" style="margin-top:6px"><b>…or a tournament</b> for the whole table:</div>' + tourOptsHtml() + '<div class="tr-row"><button data-act="tour:start">🏆 Start a tournament</button></div>' : '') + '</div>';
         renderSpot(); return;
       }
-      m.innerHTML = '<div class="tr-drill">' + dailyHtml() + '<div class="tr-q"><b>Play 8-handed No-Limit Hold’em.</b><br>Blinds 0.5/1, everyone 100bb deep every hand. Bots play real styles — tight, loose, passive, a calling station, a maniac — and their style is on their seat, so you can practise adjusting to it.<br><br>Every decision is graded on the right as it’s made: preflop against the charts, after the flop on equity against what each opponent’s actions say they hold, and the pot odds. When it’s your turn, the right-hand column sums up the hand so far and says what to do, with the size; when a hand ends the AI coach can talk you through it.</div>'
+      m.innerHTML = '<div class="tr-drill">' + dailyHtml() + '<div class="tr-q tr-levelbox">' + levelSelHtml() + '<br><span class="tr-dim">' + esc(COACH_LEVELS[lvlIdx()][2]) + ' Change it any time — it changes how things are explained, not the advice.</span></div>'
+        + '<div class="tr-q"><b>Play 8-handed No-Limit Hold’em.</b><br>Blinds 0.5/1, everyone 100bb deep every hand. Bots play real styles — tight, loose, passive, a calling station, a maniac — and their style is on their seat, so you can practise adjusting to it.<br><br>Every decision is graded on the right as it’s made: preflop against the charts, after the flop on equity against what each opponent’s actions say they hold, and the pot odds. When it’s your turn, the right-hand column sums up the hand so far and says what to do, with the size; when a hand ends the AI coach can talk you through it.</div>'
         + '<div class="tr-row">' + fieldHtml() + '</div>'
         + '<div class="tr-row"><button data-act="play:next">🃏 Play cash hands against the bots</button>' + AUTO_BTN + '</div>'
         + '<div class="tr-q" style="margin-top:4px">🎬 <b>Watch the Angel play</b> — sit back while the Angel plays hand after hand in your seat: every card face up, every move (its own and the bots’) explained beside the player and in the column on the right, with the bet sizes and the strategy behind them' + (CAN_SPEAK ? ', read aloud as it goes' : '') + '. Press Stop whenever you want the seat back.</div>'
@@ -2188,7 +2329,7 @@ const Trainer = (() => {
       if (!room) b.push(AUTO_BTN);
       actions = b.join('');
     }
-    const optsRow = '<label><input type="checkbox" data-opt="advise"' + (opts.advise ? ' checked' : '') + ' /> Advise me before I act</label>'
+    const optsRow = levelSelHtml() + '<label><input type="checkbox" data-opt="advise"' + (opts.advise ? ' checked' : '') + ' /> Advise me before I act</label>'
       + '<label><input type="checkbox" data-opt="detail"' + (opts.detail ? ' checked' : '') + ' /> 📊 Detailed explanations (stat tables)</label>'
       + (CAN_SPEAK ? '<label><input type="checkbox" data-opt="speak"' + (opts.speak ? ' checked' : '') + ' /> 🔊 Read explanations aloud</label>' : '')
       + '<label><input type="checkbox" data-opt="pause"' + (pauseOn() ? ' checked' : '') + ' /> Explain after I act' + (room ? '' : ' (and pause)') + '</label>'
@@ -2202,7 +2343,7 @@ const Trainer = (() => {
       + '<div class="tr-actions">' + actions + '</div>'
       + '<div class="tr-key">Key: ' + Array.from(new Set(g.players.map((q, j) => posOf(g, j)).filter(Boolean))).map(p => '<b>' + p + '</b> ' + POS_FULL[p] + (p === 'BTN' ? ' (the dealer)' : p === 'UTG' ? ' (first to act)' : '')).join(' · ') + ' · <b>bb</b> big blinds · <b>D</b> dealer button</div>'
       + '<div class="tr-opts">' + optsRow + '<span>Hand #' + g.handNo + (T ? '' : ' · your session ' + (stats.net >= 0 ? '+' : '') + bbs(stats.net)) + '</span></div>';
-    setPanel((autoOn() ? autoHtml() : autoClose) + (autoClose ? '' : watchHtml()) + panel + advice);
+    setPanel(primerHtml() + (autoOn() ? autoHtml() : autoClose) + (autoClose ? '' : watchHtml()) + panel + advice);
     renderSpot();
   }
   function renderSpot() {
@@ -3065,6 +3206,7 @@ const Trainer = (() => {
       if (e.target && e.target.id === 'trField') { opts.field = e.target.value; saveOpts(); return; }
       const r = pick(e, 'data-room');
       if (r && isHost()) { room.faceUp = !!r.checked; broadcast(); renderPlay(); feed('', '<b>Cards: ' + (room.faceUp ? 'face up for everyone' : 'own cards only') + '</b>' + (room.faceUp ? 'Every card and grade is shown as it happens.' : 'Everyone’s cards and grades are revealed when each hand ends.')); return; }
+      const sel = pick(e, 'data-sel'); if (sel && sel.dataset.sel === 'level') return setLevel(sel.value);
       const b = pick(e, 'data-opt'); if (!b) return;
       opts[b.dataset.opt] = !!b.checked; saveOpts();
       if (b.dataset.opt === 'showBots') renderPlay();
@@ -3085,7 +3227,7 @@ const Trainer = (() => {
 
   return {
     wire, open, close,
-    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech, storyHtml },
+    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech, storyHtml, levelWhy, COACH_LEVELS, primerHtml, HAND_RANKS, rankOf, setLevelForTest: v => { opts.level = v; } },
   };
 })();
 
