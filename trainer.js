@@ -1341,6 +1341,7 @@ const Trainer = (() => {
   function botMove() {
     const i = g.toAct, st = g.street, d = botDecide(g, i, Math.random);
     act(g, i, d);
+    if (g.players[i].allin && !g.over) talkEvent('allin', { seat: i });
     const last = g.log.filter(l => l.i === i && l.kind !== 'post').pop();
     (g.watchLog || (g.watchLog = [])).push({ i, st, at: g.acts.length - 1, txt: last ? last.txt : d.type, why: d.why || '' });
   }
@@ -1524,6 +1525,7 @@ const Trainer = (() => {
     const Eact = (room || opts.showBots) && live.length ? equityVsRanges(s.cards, s.board, live.map(q => ({ fixed: q.cards })), 2000) : null;
     decisions.push({ id: handKey() + '.' + decisions.length, at: (g.acts || []).length, seat: i, name: g.players[i].name, street: s.street, kind, verb: verbOf(kind, s), G, E, Eact, detail: detailFor(g, i, E), auto: autoOn() && i === me });
     act(g, i, { type: kind, to });
+    if (g.players[i].allin && !g.over) talkEvent('allin', { seat: i });
   }
   // Runs on the host (or solo) for every person's action.
   function doAct(i, type, to) {
@@ -1742,6 +1744,7 @@ const Trainer = (() => {
   }
   function summarize() {
     summarized = handKey();
+    if (g.result && g.result.wins.reduce((a, w) => a + w.amt, 0) >= 60) talkEvent('bigpot');
     const mine = decisions.filter(d => d.seat === me), T = g.tour;
     const counts = !autoOn() && !mine.some(d => d.auto);          // a hand the Angel played isn't part of your session
     let head = 'Hand #' + g.handNo + ' over';
@@ -1882,8 +1885,9 @@ const Trainer = (() => {
       let seat = -1;
       for (let j = 1; j < (g ? g.players.length : NSEATS) && seat < 0; j++) if (!reserved(j) && (!g || !isHuman(g.players[j]))) seat = j;
       if (seat < 0) { try { conn.send({ t: 'full' }); } catch (e) {} setTimeout(() => { try { conn.close(); } catch (e) {} }, 800); return; }
-      room.conns.set(conn, { seat, name, pending: true });
+      room.conns.set(conn, { seat, name, pending: true, talk: m.talk !== false });
       feed('', '<b>👋 ' + esc(name) + ' joined</b>' + (g ? 'Dealt in from the next hand.' : 'Deal when everyone’s here.'));
+      talkEvent('greet', { name });
       broadcast(); if (tab === 'play') renderPlay();
     } else if (m.t === 'act') {
       const c = room.conns.get(conn);
@@ -1955,7 +1959,7 @@ const Trainer = (() => {
     peer.on('open', () => {
       const conn = peer.connect(PEER_PREFIX + code.toLowerCase(), { reliable: true, serialization: 'json' });
       room.conn = conn;
-      conn.on('open', () => { clearTimeout(giveUp); room.status = ''; conn.send({ t: 'hello', name: myName() }); voicePayload().then(vp => { if (vp && conn.open) { try { conn.send(vp); } catch (e) {} } }); feed('', '<b>👥 Joined table ' + code + '</b>You’re dealt in from the next hand.'); renderPlay(); });
+      conn.on('open', () => { clearTimeout(giveUp); room.status = ''; conn.send({ t: 'hello', name: myName(), talk: opts.myTalk !== false }); voicePayload().then(vp => { if (vp && conn.open) { try { conn.send(vp); } catch (e) {} } }); feed('', '<b>👥 Joined table ' + code + '</b>You’re dealt in from the next hand.'); renderPlay(); });
       conn.on('data', onHostMsg);
       conn.on('close', () => { if (room && room.conn === conn) { toast('The host closed the table', 'red'); leaveRoom(true); } });
     });
@@ -2298,6 +2302,7 @@ const Trainer = (() => {
   // saved as a file and imported on the PC. Nothing is sent without the consent tick.
   const TVOICE_KEY = 'pokerangel.tablevoice', TVOICE_MAX_S = 60, TVOICE_MIN_S = 12;
   const VOICE_PARA = 'Evening, everyone. Shuffle up and deal. I’ve got a feeling about tonight — the cards have been kind to me all week, and I’m not about to argue with them. Pass the chips, pour me something warm, and let’s see a flop. If you bet into me, I might just call; if you check, I might just bet. Either way, no hard feelings — it’s only a game, and it’s a good one.';
+  const VOICE_PARA2 = 'Right — who’s dealing? Three of us left and the pot’s already enormous! Honestly, I had no idea what he was holding. Was it a bluff? Maybe. Did it work? Absolutely not. Pass me the twenties, the fifties and that one red chip. Nine, ten, Jack… oh, come on, just one more. Well, that’s the end of that — same time next week? Lovely. Mine’s a tea, two sugars.';
   let myVoice = null; try { myVoice = JSON.parse(ls(TVOICE_KEY) || 'null'); } catch (e) { myVoice = null; }
   const HAS_LIB = typeof window !== 'undefined' && !!(window.api && window.api.voicesList);
   let voiceLib = [];                                                          // desktop: [{ name, mime, secs, when, hash, voiceId }]
@@ -2314,19 +2319,19 @@ const Trainer = (() => {
   const hashOf = str => { let h = 5381; for (let i = 0; i < str.length; i += 97) h = ((h << 5) + h + str.charCodeAt(i)) >>> 0; return h.toString(36) + str.length.toString(36); };
   const recName = () => { const el = $('trVoiceName'); const n = (el ? el.value : '').replace(/[^\w .'-]/g, '').trim().slice(0, 16); return n || myName(); };
   // A finished recording or an imported file: into the library (desktop) or the browser (web).
-  async function keepVoice(v, name) {
+  async function keepVoice(v, name, append) {
     if (!HAS_LIB) { myVoice = v; try { ls(TVOICE_KEY, JSON.stringify(v)); } catch (e) { toast('Couldn’t keep the recording in this browser (too big) — it will still be sent this session', 'red'); } renderMain(); return; }
     try {
-      const r = await window.api.voicesSave({ name, mime: v.mime, b64: v.b64, secs: v.secs, hash: v.hash });
+      const r = await window.api.voicesSave({ name, mime: v.mime, b64: v.b64, secs: v.secs, hash: v.hash, append: !!append });
       await loadLib();
       if (!opts.myVoiceName || !voiceLib.some(x => x.name === opts.myVoiceName)) { opts.myVoiceName = r.name; saveOpts(); }
-      toast('🎙 ' + r.name + (r.voiceId ? ' is ready to use' : r.cloneError ? ' saved — not cloned: ' + r.cloneError : ' saved — it will be cloned once ElevenLabs is set up in ⚙ Settings'), r.voiceId ? 'green' : '');
+      toast('🎙 ' + r.name + (r.takes > 1 ? ' (' + r.takes + ' takes)' : '') + (r.voiceId ? ' is ready to use' : r.cloneError ? ' saved — not cloned: ' + r.cloneError : ' saved — it will be cloned once ElevenLabs is set up in ⚙ Settings'), r.voiceId ? 'green' : '');
     } catch (e) { toast('Couldn’t save the recording: ' + cleanErr(e), 'red'); }
     renderMain();
   }
-  async function recStart() {
+  async function recStart(forName, append) {
     if (rec.r) return;
-    const name = recName();
+    const name = forName || recName(); rec.append = !!append;
     try {
       rec.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
       const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'].find(m => MediaRecorder.isTypeSupported(m)) || '';
@@ -2338,7 +2343,7 @@ const Trainer = (() => {
         rec.r = null; rec.stream = null; clearInterval(rec.timer);
         if (secs < TVOICE_MIN_S) { toast('That was only ' + secs + ' seconds — read the whole paragraph (about 20–30 seconds)', 'red'); renderMain(); return; }
         const fr = new FileReader();
-        fr.onload = () => { const m = String(fr.result).match(/^data:([^;]+);base64,(.+)$/); if (m) keepVoice({ mime: m[1], b64: m[2], hash: hashOf(m[2]), secs, when: Date.now() }, rec.name); };
+        fr.onload = () => { const m = String(fr.result).match(/^data:([^;]+);base64,(.+)$/); if (m) keepVoice({ mime: m[1], b64: m[2], hash: hashOf(m[2]), secs, when: Date.now() }, rec.name, rec.append); };
         fr.readAsDataURL(blob);
       };
       rec.r.start(250);
@@ -2405,15 +2410,15 @@ const Trainer = (() => {
     let list = '';
     if (HAS_LIB) {
       list = voiceLib.length ? '<div class="tr-voices">' + voiceLib.map(v => '<div class="tr-vrow"><label title="Sent to the host when you join a table — your character speaks as you"><input type="radio" name="trMyVoice" data-myvoice="' + esc(v.name) + '"' + (opts.myVoiceName === v.name ? ' checked' : '') + ' /> mine</label>'
-        + '<b>' + esc(v.name) + '</b><span class="tr-dim">' + (v.secs ? v.secs + ' s · ' : '') + fmtWhen(v.when) + ' · ' + (v.voiceId ? '✅ ready' : HAS_TTS() || voiceCfg.hasTtsKey ? '<button class="ghost tr-mini" data-act="rec:clone" data-name="' + esc(v.name) + '">Clone on ElevenLabs</button>' : 'saved; cloned once ElevenLabs is set up') + '</span>'
-        + '<span class="tr-vbtns"><button class="ghost tr-mini" data-act="rec:play" data-name="' + esc(v.name) + '">▶</button><button class="ghost tr-mini" data-act="rec:save" data-name="' + esc(v.name) + '" title="Save as a file">⬇</button><button class="ghost tr-mini" data-act="rec:delete" data-name="' + esc(v.name) + '" title="Delete this voice (and its clone)">✖</button></span></div>').join('') + '</div>'
+        + '<b>' + esc(v.name) + '</b><span class="tr-dim">' + (v.takes > 1 ? v.takes + ' takes · ' : '') + (v.secs ? v.secs + ' s · ' : '') + fmtWhen(v.when) + ' · ' + (v.voiceId ? '✅ ready' : HAS_TTS() || voiceCfg.hasTtsKey ? '<button class="ghost tr-mini" data-act="rec:clone" data-name="' + esc(v.name) + '">Clone on ElevenLabs</button>' : 'saved; cloned once ElevenLabs is set up') + '</span>'
+        + '<span class="tr-vbtns">' + (v.takes < 3 && !rec.r ? '<button class="ghost tr-mini" data-act="rec:more" data-name="' + esc(v.name) + '" title="Record a second, more varied paragraph — a noticeably better clone">➕ take</button>' : '') + '<button class="ghost tr-mini" data-act="rec:play" data-name="' + esc(v.name) + '">▶</button><button class="ghost tr-mini" data-act="rec:save" data-name="' + esc(v.name) + '" title="Save as a file">⬇</button><button class="ghost tr-mini" data-act="rec:delete" data-name="' + esc(v.name) + '" title="Delete this voice (and its clone)">✖</button></span></div>').join('') + '</div>'
         : '<div class="tr-dim">No voices yet.</div>';
     } else if (myVoice) {
       list = '<div class="tr-vrow"><b>My table voice</b><span class="tr-dim">' + (myVoice.secs ? 'Recorded ' + myVoice.secs + ' s on ' : 'Imported on ') + fmtWhen(myVoice.when) + '</span><span class="tr-vbtns"><button class="ghost tr-mini" data-act="rec:play">▶ Play back</button><button class="ghost tr-mini" data-act="rec:save">⬇ Save</button><button class="ghost tr-mini" data-act="rec:delete">Delete</button></span></div>';
     }
     return '<div class="tr-q tr-rec"><b>🎙 Voices</b> — ' + (HAS_LIB ? 'record as many as you like (you, family, friends), each with a name. Each is cloned on your ElevenLabs account, then you can give it to any character at the table (🎭 below), choose it as the coach’s voice in ⚙ Settings → Voice, or mark it “mine” to be sent to a table you join. ' : 'read the paragraph once (about 25 seconds). When you join a friend’s table it goes to the host, whose ElevenLabs account gives your character your own voice. ')
       + (ON_PHONE ? 'You’re on a phone — a good microphone. Record here, then join the table from this phone, or Save the file, share it to the PC and Import it there.' : 'A phone’s microphone is usually better than a PC’s: open the web version on your phone, record there, Save, share the file to this PC and Import it here.')
-      + '<div class="tr-para">' + esc(VOICE_PARA) + '</div><div class="tr-row">' + recRow + '</div>' + list
+      + '<div class="tr-para">' + esc(rec.r && rec.append ? VOICE_PARA2 : VOICE_PARA) + '</div>' + (rec.r && rec.append ? '<div class="tr-dim">Second take: a different paragraph, with questions and numbers, so the clone hears more of the voice.</div>' : '') + '<div class="tr-row">' + recRow + '</div>' + list
       + '<label class="tr-dim"><input type="checkbox" data-opt="voiceConsent"' + (opts.voiceConsent ? ' checked' : '') + ' /> I agree that a recording marked “mine” may be sent to the host of a table I join, and cloned on their ElevenLabs account to voice my character at that table.</label></div>'
       + assignHtml();
   }
@@ -2469,6 +2474,7 @@ const Trainer = (() => {
   function chatterCandidates() {
     if (!g || me < 0) return [];
     return g.players.map((p, j) => ({ p, j })).filter(o => o.j !== me && (g.over || o.p.folded || o.p.out))
+      .filter(o => !(room && room.conns && Array.from(room.conns.values()).some(c => c.seat === o.j && c.talk === false)))   // a friend who asked for their character to stay quiet
       .map(o => ({ seat: o.j, name: o.p.name, voiceId: voiceFor(o.p) })).filter(o => o.voiceId);
   }
   function voiceFor(p) {
@@ -2480,33 +2486,104 @@ const Trainer = (() => {
     let h = 0; for (const ch of p.name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
     return list[h % list.length].id;
   }
-  const chatterOn = () => !!opts.chatter && HAS_TTS() && !isGuest() && !(room && room.web);
+  // ---- how chatty: Off · Murmurs · Chatty · Banter ----
+  // Murmurs: the fixed bank, rarely. Chatty: lines the AI writes for each character (the nit grumbles,
+  // the maniac brags, a friend is just friendly), more often, and reactions to what happens — an
+  // all-in, a huge pot, someone arriving — plus the odd word to you by name. Banter: all that, more
+  // often, with short two-line exchanges between two characters. Still never over the coaching, and by
+  // default never while you're deciding. The AI's lines are kept for a fortnight per character, and
+  // every spoken line is cached, so neither the AI nor the voice is paid for twice.
+  const TALK_LEVELS = [['off', 'Off', 'Silence apart from the coaching.'], ['murmur', 'Murmurs', 'The odd short line, now and then.'], ['chatty', 'Chatty', 'Lines written for each character, reactions to big moments, a word to you by name.'], ['banter', 'Banter', 'Chatty, more often, with short exchanges between players.']];
+  const talkLevel = () => TALK_LEVELS.some(l => l[0] === opts.talk) ? opts.talk : (opts.chatter ? 'murmur' : 'off');
+  const talkIdx = () => TALK_LEVELS.findIndex(l => l[0] === talkLevel());
+  const chatterOn = () => talkIdx() > 0 && HAS_TTS() && !isGuest() && !(room && room.web);
+  const TALK_KEY = 'pokerangel.talk.v1', TALK_TTL = 14 * 86400000;
+  let talkBanks = {}; try { talkBanks = JSON.parse(ls(TALK_KEY) || '{}') || {}; } catch (e) { talkBanks = {}; }
+  const talkBusy = new Set();
+  const TALK_SYSTEM = 'You write table talk for one character at a friendly home poker game in Britain. Reply with JSON only — an object with these keys, each an array of short spoken lines (at most 12 words each, plain text, no quotation marks, no emoji): '
+    + '"watching" (8 lines, said while sitting out a hand others are playing), "between" (8, said between hands), "won" (6, having just won a pot), "lost" (6, having just lost one), "allin" (6, someone has just gone all-in), "bigpot" (6, a huge pot has just been won), "greet" (4, welcoming a newcomer called {player}), "toPlayer" (6, a friendly word to the person at the table called {player}), '
+    + 'and "banter" (6 objects {"a": "...", "b": "..."}: a line this character says to another player and a plausible one-line reply from them). '
+    + 'RULES: never mention specific cards, hands, odds, or what anyone should do or should have done — nothing that could coach or give a hand away. No swearing, no cruelty; teasing is fine. Use {player} exactly as written where a name belongs and nowhere else. Stay in character throughout.';
+  const bankKey = p => p.style ? p.style + ':' + (p.level || '') : 'friend';
+  const persona = p => p.style ? 'The character: ' + p.name + ', a ' + styleName(p.style) + ' player' + (p.level ? ' (' + p.level + ')' : '') + '. How they play: ' + (STYLE_HOW[p.style] || STYLES[p.style].label) + '. Give them a voice to match — the way they play is the way they talk.'
+    : 'The character: a friend who has come round to play — warm, relaxed, a bit of a tease, happy to be here.';
+  const cleanLine = l => String(l || '').replace(/["“”]/g, '').replace(/\s+/g, ' ').trim().slice(0, 90);
+  async function ensureBank(p) {
+    const key = bankKey(p), have = talkBanks[key];
+    if (have && Date.now() - have.when < TALK_TTL) return have.bank;
+    if (!HAS_AI || talkBusy.has(key) || !(window.api && window.api.draft)) return null;
+    talkBusy.add(key);
+    try {
+      const txt = await window.api.draft({ system: TALK_SYSTEM, user: persona(p) });
+      const j = JSON.parse(txt.slice(txt.indexOf('{'), txt.lastIndexOf('}') + 1)), bank = {};
+      for (const k of ['watching', 'between', 'won', 'lost', 'allin', 'bigpot', 'greet', 'toPlayer']) bank[k] = (Array.isArray(j[k]) ? j[k] : []).map(cleanLine).filter(l => l && !/\b(fold|raise|call|bluff|flush|straight|ace|king|queen|jack|pair|odds)\b/i.test(l)).slice(0, 10);
+      bank.banter = (Array.isArray(j.banter) ? j.banter : []).map(x => x && ({ a: cleanLine(x.a), b: cleanLine(x.b) })).filter(x => x && x.a && x.b).slice(0, 8);
+      if (bank.watching.length + bank.between.length < 6) throw new Error('too few lines');
+      talkBanks[key] = { when: Date.now(), bank }; try { ls(TALK_KEY, JSON.stringify(talkBanks)); } catch (e) {}
+      return bank;
+    } catch (e) { console.error('table talk', e); talkBanks[key] = { when: Date.now() - TALK_TTL + 3600000, bank: null }; return null; }   // try again in an hour
+    finally { talkBusy.delete(key); }
+  }
+  function freshTalk() { talkBanks = {}; try { localStorage.removeItem(TALK_KEY); } catch (e) {} toast('The characters will get fresh lines from the AI', 'green'); }
+  // The line for a character and a moment: the AI's bank at Chatty and above, else the fixed one.
+  function lineFor(p, kind, bank) {
+    const b = talkIdx() >= 2 && bank ? bank : null, fallback = { allin: 'watching', bigpot: 'between', greet: 'between', toPlayer: 'between' };
+    let pool = b && b[kind] && b[kind].length ? b[kind] : (REMARKS[kind] || REMARKS[fallback[kind] || 'between']);
+    const fresh = pool.filter(l => recentSaid.indexOf(l) < 0); pool = fresh.length ? fresh : pool;
+    return pool[Math.floor(Math.random() * pool.length)].replace(/\{player\}/g, myName());
+  }
+  // moments worth a word: queued by the game, spoken within a few seconds if the level allows
+  let talkEvents = [];
+  function talkEvent(kind, ctx) {
+    if (!chatterOn()) return;
+    const chance = [0, 0.25, 0.65, 0.9][talkIdx()] || 0;
+    if (Math.random() > chance) return;
+    talkEvents.push({ kind, ctx: ctx || {}, at: Date.now() });
+    clearTimeout(chatterTimer); chatterTimer = setTimeout(chatterTick, 1500 + Math.random() * 2500);
+  }
   function chatterSchedule() {
     clearTimeout(chatterTimer);
     if (!chatterOn()) return;
-    const base = opts.chatterOften === 'more' ? 18000 : opts.chatterOften === 'less' ? 60000 : 32000;
+    const base = [0, 45000, 24000, 15000][talkIdx()] || 30000;
     chatterTimer = setTimeout(chatterTick, base * (0.6 + Math.random() * 0.8));
+  }
+  async function sayAs(who, line) {
+    const clip = await window.api.ttsSay({ voiceId: who.voiceId, text: line, speed: 1 });
+    if (!clip || voiceBusy()) return false;
+    if (isHost()) for (const [conn] of room.conns) { if (conn.open) try { conn.send({ t: 'say', seat: who.seat, mime: clip.mime, b64: clip.b64 }); } catch (e) {} }
+    await playClip(clip.b64, clip.mime, chatterVol(), panOf(who.seat));
+    return true;
   }
   async function chatterTick() {
     if (!chatterOn()) return;
     try {
       if (!shown || tab !== 'play' || !g || voiceBusy() || chatterBusy || (opts.chatterQuiet !== false && !g.over && g.toAct === me)) return;
       if (!stockVoices) { try { stockVoices = (await window.api.ttsVoices()).filter(v => !v.own); } catch (e) { stockVoices = []; } }
-      const cands = chatterCandidates(); if (!cands.length) return;
-      const who = cands[Math.floor(Math.random() * cands.length)];
-      let kind = g.over ? 'between' : 'watching';
-      if (g.over && g.result) { if (g.result.wins.some(w => w.i === who.seat)) kind = 'won'; else if (g.result.showdown && !g.players[who.seat].folded && Math.random() < 0.6) kind = 'lost'; }
-      const line = pickRemark(kind, recentSaid); recentSaid = recentSaid.concat(line).slice(-8);
-      const clip = await window.api.ttsSay({ voiceId: who.voiceId, text: line, speed: 1 });
-      if (!clip || voiceBusy()) return;
+      const cands = chatterCandidates(); if (!cands.length) { talkEvents = []; return; }
+      talkEvents = talkEvents.filter(ev => Date.now() - ev.at < 12000);
+      const ev = talkEvents.shift();
+      let pool = cands; if (ev && ev.ctx.seat != null) pool = cands.filter(c => c.seat !== ev.ctx.seat); if (!pool.length) pool = cands;
+      const who = pool[Math.floor(Math.random() * pool.length)], p = g.players[who.seat];
+      const bank = talkIdx() >= 2 ? await ensureBank(p) : null;
+      let kind = ev ? ev.kind : (g.over ? 'between' : 'watching');
+      if (!ev && g.over && g.result) { if (g.result.wins.some(w => w.i === who.seat)) kind = 'won'; else if (g.result.showdown && !p.folded && Math.random() < 0.6) kind = 'lost'; }
+      if (!ev && talkIdx() >= 2 && Math.random() < 0.15) kind = 'toPlayer';
       chatterBusy = true;
-      if (isHost()) for (const [conn] of room.conns) { if (conn.open) try { conn.send({ t: 'say', seat: who.seat, mime: clip.mime, b64: clip.b64 }); } catch (e) {} }
-      await playClip(clip.b64, clip.mime, chatterVol(), panOf(who.seat));
+      // Banter: this character says something to another, who answers in their own voice.
+      if (!ev && talkIdx() >= 3 && bank && bank.banter.length && pool.length > 1 && Math.random() < 0.35) {
+        const other = pool.filter(c => c.seat !== who.seat)[Math.floor(Math.random() * (pool.length - 1))], pair = bank.banter[Math.floor(Math.random() * bank.banter.length)];
+        if (await sayAs(who, pair.a.replace(/\{player\}/g, g.players[other.seat].name))) { await new Promise(r => setTimeout(r, 500)); if (!voiceBusy()) await sayAs(other, pair.b.replace(/\{player\}/g, p.name)); }
+        return;
+      }
+      let line = lineFor(p, kind, bank);
+      if (ev && ev.kind === 'greet' && ev.ctx.name) line = line.replace(myName(), ev.ctx.name);
+      recentSaid = recentSaid.concat(line).slice(-12);
+      await sayAs(who, line);
     } catch (e) { console.error('chatter', e); }
     finally { chatterBusy = false; chatterSchedule(); }
   }
   // A guest hears what the host's table says (its own seat is at the bottom, so the panning is its own).
-  function onSay(m) { if (!opts.chatter || !m || typeof m.b64 !== 'string' || m.b64.length > 2e6) return; playClip(m.b64, String(m.mime || 'audio/mpeg'), chatterVol(), panOf(Number(m.seat) || 0)).catch(() => {}); }
+  function onSay(m) { if (talkLevel() === 'off' || !m || typeof m.b64 !== 'string' || m.b64.length > 2e6) return; playClip(m.b64, String(m.mime || 'audio/mpeg'), chatterVol(), panOf(Number(m.seat) || 0)).catch(() => {}); }
   // Room sound: a low murmur and the odd riffle of chips, synthesised — no recording, nothing to download.
   const roomVol = () => ({ soft: 0.5, normal: 1, loud: 1.6 })[opts.roomVol || 'soft'] || 0.5;
   function roomStart() {
@@ -2538,8 +2615,12 @@ const Trainer = (() => {
     if (!canChat && !(window.AudioContext || window.webkitAudioContext)) return '';
     const sel = (key, cur, items) => '<select data-sel="' + key + '">' + items.map(([v, n]) => '<option value="' + v + '"' + (cur === v ? ' selected' : '') + '>' + n + '</option>').join('') + '</select>';
     return '<span class="tr-voice">'
-      + (canChat ? '<label title="Players who are out of the hand say the odd line, in their own recorded voice or a stock one — softly, from their side of the table, never over the coaching"><input type="checkbox" data-opt="chatter"' + (opts.chatter ? ' checked' : '') + ' /> 🗣 Table chatter</label>'
-        + (opts.chatter ? sel('chatterVol', opts.chatterVol || 'soft', [['soft', 'soft'], ['normal', 'normal'], ['loud', 'louder']]) + (isGuest() ? '' : sel('chatterOften', opts.chatterOften || 'some', [['less', 'rarely'], ['some', 'now and then'], ['more', 'often']]) + '<label title="No chatter while you are deciding"><input type="checkbox" data-opt="chatterQuiet"' + (opts.chatterQuiet !== false ? ' checked' : '') + ' /> quiet on my turn</label>') : '') : '')
+      + (canChat ? '<label title="Players who are out of the hand say the odd line, in their own recorded voice or a stock one — softly, from their side of the table, never over the coaching">🗣 Table chatter ' + sel('talk', talkLevel(), TALK_LEVELS.map(l => [l[0], l[1]])) + '</label>'
+        + (talkIdx() > 0 ? sel('chatterVol', opts.chatterVol || 'soft', [['soft', 'soft'], ['normal', 'normal'], ['loud', 'louder']])
+          + (isGuest() ? '<label title="Let the host’s table give your character a line now and then (in your recorded voice if you sent one)"><input type="checkbox" data-opt="myTalk"' + (opts.myTalk !== false ? ' checked' : '') + ' /> my character may talk</label>'
+            : '<label title="No chatter while you are deciding"><input type="checkbox" data-opt="chatterQuiet"' + (opts.chatterQuiet !== false ? ' checked' : '') + ' /> quiet on my turn</label>'
+              + (talkIdx() >= 2 ? (HAS_AI ? '<button class="ghost tr-mini" data-act="ui:freshtalk" title="Throw away the characters’ current lines and have the AI write new ones">🔄 Fresh lines</button>' : '<span class="tr-dim">(add an AI key in ⚙ Settings for lines written per character)</span>') : ''))
+          + '<span class="tr-dim" title="' + esc(TALK_LEVELS[talkIdx()][2]) + '">ⓘ</span>' : '') : '')
       + '<label title="A low room murmur and the odd riffle of chips"><input type="checkbox" data-opt="roomTone"' + (opts.roomTone ? ' checked' : '') + ' /> 🎧 Room sound</label>'
       + (opts.roomTone ? sel('roomVol', opts.roomVol || 'soft', [['soft', 'soft'], ['normal', 'normal'], ['loud', 'louder']]) : '') + '</span>';
   }
@@ -3484,6 +3565,7 @@ const Trainer = (() => {
       if (v === 'speaktoggle') { opts.speak = !opts.speak; saveOpts(); spokenLast = ''; said = new Set(); if (!opts.speak) hush(); renderMain(); }
       if (v === 'hush') hush();
       if (v === 'voicetry') speak(VOICE_SAMPLE);
+      if (v === 'freshtalk') freshTalk();
     },
     ex: v => {
       if (v.indexOf('start:') === 0) return startExample(v.slice(6), 0);
@@ -3508,7 +3590,7 @@ const Trainer = (() => {
       if (v === 'start' || v === 'again') return startTournament();
       if (v === 'menu') { freshTable(); broadcast(); renderPlay(); }
     },
-    rec: (v, b) => { const n = b && b.dataset.name; if (v === 'start') recStart(); else if (v === 'stop') recStop(); else if (v === 'play') recPlayback(n); else if (v === 'save') recSave(n); else if (v === 'delete') recDelete(n); else if (v === 'clone') recClone(n); else if (v === 'import') { const f = $('trRecFile'); if (f) { f.onchange = () => { recImport(f.files && f.files[0]); f.value = ''; }; f.click(); } } },
+    rec: (v, b) => { const n = b && b.dataset.name; if (v === 'start') recStart(); else if (v === 'stop') recStop(); else if (v === 'play') recPlayback(n); else if (v === 'save') recSave(n); else if (v === 'delete') recDelete(n); else if (v === 'clone') recClone(n); else if (v === 'more') recStart(n, true); else if (v === 'import') { const f = $('trRecFile'); if (f) { f.onchange = () => { recImport(f.files && f.files[0]); f.value = ''; }; f.click(); } } },
     room: v => {
       const nameIn = $('trName');
       if (nameIn) ls(NAME_KEY, String(nameIn.value || '').trim().slice(0, 16));
@@ -3576,6 +3658,7 @@ const Trainer = (() => {
       if (sel && sel.dataset.sel === 'voice') { opts.voice = sel.value; saveOpts(); speak(VOICE_SAMPLE); return; }
       if (sel && sel.dataset.sel === 'speakRate') { opts.speakRate = parseFloat(sel.value) || 1; saveOpts(); speak(VOICE_SAMPLE); return; }
       if (sel && /^(chatterVol|chatterOften|roomVol)$/.test(sel.dataset.sel)) { opts[sel.dataset.sel] = sel.value; saveOpts(); roomSync(); chatterSchedule(); return; }
+      if (sel && sel.dataset.sel === 'talk') { opts.talk = sel.value; opts.chatter = sel.value !== 'off'; saveOpts(); audioCtx(); chatterSchedule(); renderPlay(); return; }
       if (sel && sel.dataset.sel === 'assign') { opts.voiceAssign = opts.voiceAssign || {}; if (sel.value) opts.voiceAssign[sel.dataset.name] = sel.value; else delete opts.voiceAssign[sel.dataset.name]; saveOpts(); return; }
       const mv = pick(e, 'data-myvoice'); if (mv) { opts.myVoiceName = mv.dataset.myvoice; saveOpts(); return; }
       const b = pick(e, 'data-opt'); if (!b) return;
@@ -3584,7 +3667,7 @@ const Trainer = (() => {
       if (b.dataset.opt === 'pause' && !b.checked && g && !g.over) step();     // un-pausing lets the bots carry on
       if (b.dataset.opt === 'advise' || b.dataset.opt === 'pause' || b.dataset.opt === 'detail') renderPlay();
       if (b.dataset.opt === 'autoCalm') { if (auto) { auto.calm = !!b.checked; if (auto.calm) auto.speed = 'slow'; } renderPlay(); }
-      if (b.dataset.opt === 'chatter' || b.dataset.opt === 'chatterQuiet') { audioCtx(); chatterSchedule(); renderPlay(); }
+      if (b.dataset.opt === 'chatter' || b.dataset.opt === 'chatterQuiet' || b.dataset.opt === 'myTalk') { audioCtx(); chatterSchedule(); renderPlay(); }
       if (b.dataset.opt === 'roomTone') { audioCtx(); roomSync(); renderPlay(); }
       if (b.dataset.opt === 'voiceConsent') renderMain();
       if (b.dataset.opt === 'watch' || b.dataset.opt === 'stepBots') { renderPlay(); step(); }
@@ -3603,7 +3686,7 @@ const Trainer = (() => {
   function voiceChanged() { Promise.all([loadVoiceCfg(), loadLib()]).then(() => { ttsFails = 0; stockVoices = null; chatterSchedule(); if (shown && tab === 'play') renderPlay(); }); }
   return {
     wire, open, close, voiceChanged, voiceLabel,
-    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech, storyHtml, levelWhy, COACH_LEVELS, primerHtml, HAND_RANKS, rankOf, REMARKS, pickRemark, INVITE, VOICE_PARA, setLevelForTest: v => { opts.level = v; } },
+    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech, storyHtml, levelWhy, COACH_LEVELS, primerHtml, HAND_RANKS, rankOf, REMARKS, pickRemark, INVITE, VOICE_PARA, VOICE_PARA2, TALK_LEVELS, TALK_SYSTEM, setLevelForTest: v => { opts.level = v; } },
   };
 })();
 
