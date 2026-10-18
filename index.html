@@ -56,18 +56,21 @@
   .tr-tabs button.on{background:linear-gradient(180deg,#4f8ff7,#2563eb);color:#fff;box-shadow:0 4px 12px -6px rgba(37,99,235,.9)}
   .tr-body{flex:1;min-height:0;display:flex}
   #trMain{flex:1;min-width:0;overflow:auto;padding:14px 22px 22px;display:flex;flex-direction:column;gap:14px}
-  #trSide{width:390px;flex:0 0 390px;border-left:1px solid #1c2942;display:flex;flex-direction:column;min-height:0;overflow-y:auto;background:#0b1426}
+  #trSide{width:340px;flex:0 0 340px;border-left:1px solid #1c2942;display:flex;flex-direction:column;min-height:0;overflow-y:auto;background:#0b1426}
   #trPanel{flex:0 0 auto;padding:10px;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid #1c2942}
   #trPanel:empty{display:none}
   #trPanel{padding:8px;gap:8px}
-  #trPanel .tr-explain, #trPanel .tr-advice{font-size:12.5px;line-height:1.5;padding:10px 11px;gap:6px;border-radius:10px}
-  #trPanel .tr-explain > b, #trPanel .tr-advice > b{font-size:13.5px}
+  #trPanel .tr-explain, #trPanel .tr-advice{font-size:12px;line-height:1.45;padding:9px 10px;gap:5px;border-radius:10px}
+  #trPanel .tr-explain > b, #trPanel .tr-advice > b{font-size:12.5px}
   #trPanel .tr-row{gap:6px}
   #trPanel button{padding:6px 10px;font-size:12px}
   #trPanel .tr-opt b{min-width:0}
   #trPanel .tr-opt span{min-width:0}
   #trSpot{padding:8px 12px;border-bottom:1px solid #1c2942;font-size:11.5px;color:#9fb3cf;line-height:1.45;flex:0 0 auto}
   #trSpot b{color:#e2e8f0}
+  #trSpot:empty{display:none}
+  #trFeed:not(.open){display:none}
+  .tr-feedtog{align-self:flex-start;margin:8px 10px;padding:4px 10px;font-size:11.5px}
   #trFeed{flex:0 0 auto;padding:8px 10px;display:flex;flex-direction:column;gap:6px}
   #trFeed .tr-msg{max-height:4.6em;overflow:hidden;position:relative;cursor:pointer;flex:0 0 auto}
   #trFeed .tr-msg.open{max-height:none;cursor:default}

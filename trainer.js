@@ -1080,9 +1080,22 @@ const Trainer = (() => {
     d.className = 'tr-msg' + (kind ? ' ' + kind : ''); d.innerHTML = plain(html);
     f.insertBefore(d, f.firstChild);
     while (f.children.length > 40) f.removeChild(f.lastChild);
-    if (d.scrollHeight > d.clientHeight + 4) d.classList.add('more');
     d.addEventListener('click', e => { if (!e.target.closest('button,a,input,select,summary')) d.classList.toggle('open'); });
+    feedTog();
     return d;
+  }
+  // The notes so far stay folded away behind one button, so the column shows only the current explanation.
+  function feedTog() {
+    const f = $('trFeed'); if (!f) return;
+    let b = f.previousElementSibling;
+    if (!b || !b.classList.contains('tr-feedtog')) {
+      b = document.createElement('button'); b.className = 'ghost tr-feedtog'; f.parentNode.insertBefore(b, f);
+      b.onclick = () => { opts.feedOpen = !opts.feedOpen; saveOpts(); feedTog(); };
+    }
+    f.classList.toggle('open', !!opts.feedOpen);
+    b.textContent = (opts.feedOpen ? '▾ Hide' : '▸ Show') + ' earlier notes (' + f.children.length + ')';
+    b.style.display = f.children.length ? '' : 'none';
+    if (opts.feedOpen) for (const d of f.children) d.classList.toggle('more', d.scrollHeight > d.clientHeight + 4);   // measurable only when shown
   }
   function tally(G) {
     stats[G.v] = (stats[G.v] || 0) + 1; stats.loss = Math.round((stats.loss + (G.loss || 0)) * 100) / 100;
@@ -1320,7 +1333,7 @@ const Trainer = (() => {
   }
   function decHtml(d, toggle) {
     const who = d.seat === me ? 'You' : d.name;
-    return '<b>' + esc(plain(who + ' chose: ' + (d.verb || d.kind) + ' · ' + d.G.head)) + '</b><div class="tr-why">' + fmtWhy(d.G.why) + '</div>' + detailHtml(d.detail, toggle) + '<div class="tr-why">'
+    return '<b>' + esc(plain(who + ' chose: ' + (d.verb || d.kind) + ' · ' + d.G.head)) + '</b><div class="tr-why">' + fmtWhy(d.seat === me ? d.G.why.split('\n').filter(l => !/^Your hand:/.test(l)).join('\n') : d.G.why) + '</div>' + detailHtml(d.detail, toggle) + '<div class="tr-why">'
       + (d.Eact != null ? '\nAgainst the cards actually held: ' + d.Eact + '%.' : '')
       + (d.G.loss > 0 && d.kind !== d.G.head.replace(/^Best play: (\w+).*/, '$1') ? '\nWhat this choice costs: about ' + bbs(d.G.loss) + ' each time, on average.' : '')
       + (d.G.usd > 0 ? '\nWhat this choice costs: about ' + usd(d.G.usd) + ' in prize money, on average.' : '')
@@ -1987,7 +2000,7 @@ const Trainer = (() => {
     const extras = (HAS_AI ? '<button class="ghost" data-act="play:ai">🤖 Ask the AI coach about this hand</button>' : '') + '<button class="ghost" data-act="play:copy">📋 Copy hand history</button>';
     const pend = pauseOn() ? myPending() : null;
     const panel = pend ? '<div class="tr-explain">' + decHtml(pend, true)
-      + (g.over ? '' : '<div class="tr-row">' + (holding() ? '<button class="primary" data-act="play:continue">Continue ▶</button><span class="tr-dim">The bots wait until you press Continue.</span>' : '<button class="ghost" data-act="play:continue">Got it</button>') + '</div>') + '</div>' : '';
+      + (g.over ? '' : '<div class="tr-row">' + (holding() ? '<span class="tr-dim">Press Continue ▶ under the table when you’re ready.</span>' : '<button class="ghost" data-act="play:continue">Got it</button>') + '</div>') + '</div>' : '';
     if (g.over && T && T.done) {
       actions = (isGuest() ? '<span class="tr-wait">Waiting for the host to start the next game…</span>' : '<button class="primary" data-act="tour:again">🏆 New tournament</button><button class="ghost" data-act="tour:menu">Back to the menu</button>') + extras;
     } else if (g.over) {
@@ -2039,23 +2052,11 @@ const Trainer = (() => {
       lines.push('<span class="tr-dim">Prize equity = what each stack is worth in prize money right now (ICM).</span>');
     }
     if (me < 0 || !g.players[me] || !g.players[me].cards || !g.players[me].cards.length) { el.innerHTML = lines.concat(['<b>Hand #' + g.handNo + '</b>', 'Watching.']).join('<br>'); return; }
-    const p = g.players[me], L = legal(g, me), k = cls(p.cards[0], p.cards[1]);
-    lines.push('<b>Hand #' + g.handNo + ' · ' + STREET[Math.min(g.street, 3)] + '</b>',
-      'You: ' + posOf(g, me) + ' · ' + esc(cardsTxt(p.cards)) + ' — ' + esc(handWords(k)) + ' (' + k + '), ' + esc(strength(k)));
+    // your hand, its strength and the price are in the box above your cards; each opponent's read is in
+    // the box beside them as they act. Only what isn't on the table stays here.
     if (!g.over && g.toAct === me) {
-      lines.push('Pot ' + bbs(L.pot) + (L.toCall > 0 ? ' · to call ' + bbs(L.toCall) + ' → you need ' + r1(L.toCall / (L.pot + L.toCall) * 100) + '% equity (chips)' : ' · no bet to you'));
       const sp = shortSpot(g, me);
       if (sp) lines.push('<span class="tr-dim">' + (sp.type === 'shove' ? 'Push/fold spot: ' + r1(sp.S) + 'bb effective, ' + sp.m + ' behind.' : 'Facing an all-in of ' + r1(sp.S) + 'bb.') + '</span>');
-    }
-    const opps = g.players.map((q, j) => ({ q, j })).filter(o => o.j !== me && !o.q.folded);
-    if (opps.length && !g.over && false) {   // now in the box beside each player as they act (seatNote)
-      lines.push('<span class="tr-dim">What the others probably hold, judged from how they’ve played:</span>');
-      const unread = opps.filter(o => o.q.rangeW >= 0.99 && !(o.q.post || []).length);
-      if (unread.length > 1) lines.push('· ' + unread.map(o => esc(o.q.name) + ' (' + posOf(g, o.j) + ')').join(', ') + ': haven’t shown anything yet — could have any two cards.');
-      (unread.length > 1 ? opps.filter(o => !unread.includes(o)) : opps).forEach(o => {
-        const acts = (o.q.post || []).map(a => a.kind).join(', ');
-        lines.push('· ' + esc(o.q.name) + ' (' + posOf(g, o.j) + '): ' + (o.q.rangeW >= 0.99 ? 'could have any two cards' : 'likely one of the best ' + r1(o.q.rangeW * 100) + '% of hands') + (acts ? ', then ' + esc(acts.replace(/bet/g, 'bet or raised').replace(/check/g, 'checked').replace(/call/g, 'called')) : '') + '.');
-      });
     }
     el.innerHTML = plain(lines.join('<br>'));
   }
