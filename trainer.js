@@ -1327,8 +1327,8 @@ const Trainer = (() => {
           k += n - 1;
         } else parts.push(name(acts[k].i) + ' ' + verb(acts[k]));
       }
-      if (!parts.length && st === g.street) parts.push(st === 0 ? 'First to act is you.' : 'Checked to you first.');
-      streets.push('<div><b class="tr-lbl">' + STREET[st] + (b.length ? ' ' + b.map(c => cardHtml(c)).join('') : '') + '</b> ' + esc(plain(parts.join(' · '))) + (parts.length ? '.' : '') + '</div>');
+      if (!parts.length && st === g.street) parts.push('You act first.');
+      streets.push('<div><b class="tr-lbl">' + STREET[st] + (b.length ? ' ' + b.map(c => cardHtml(c)).join('') : '') + '</b> ' + esc(plain(parts.join(' · '))) + (parts.length && !/\.$/.test(parts[parts.length - 1]) ? '.' : '') + '</div>');
     }
     const L = legal(g, me), live = g.players.filter((q, j) => j !== me && !q.folded && !q.out).length;
     const facing = L.toCall > 0 ? 'Facing ' + bbs(L.toCall) + ' to call' + (g.players.filter(q => q.allin && !q.folded).length ? ' (someone is all-in)' : '') : 'No bet to you';
