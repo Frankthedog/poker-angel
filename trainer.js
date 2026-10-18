@@ -651,9 +651,32 @@ const Trainer = (() => {
     if (r < 0.85 || !L.canRaise) return { type: 'fold' };
     return sized(g, i, g.curBet * (2 + rng() * 2));
   }
+  // The sound play for seat i by the trainer's own grader, with its one-line conclusion — used to say
+  // what a bot SHOULD have done when it plays at random. Its equity draw uses a fixed seed, so the
+  // game's own random sequence is untouched.
+  function soundPlay(g, i) {
+    const s = spot(g, i), p = g.players[i], sp = !s.street && shortSpot(g, i);
+    const so = why => (String(why || '').split('\n').find(l => /^So:/.test(l)) || '').replace(/^So:\s*/, '');
+    if (sp) { const go = gradeShort(g, i, sp.type === 'shove' ? 'raise' : 'call', p.bet + p.stack); return { kind: go.v === 'good' ? (sp.type === 'shove' ? 'raise' : 'call') : 'fold', so: so(go.why), s }; }
+    if (!s.street) { const A = preflopAdvice(s.k, s); return { kind: A.best, so: so(A.why), s }; }
+    const E = equityVsRanges(s.cards, s.board, s.opps, 2500, mulberry(7));
+    const kinds = s.toCall > 0 ? ['raise', 'call', 'fold'] : ['raise', 'check'];
+    const rated = kinds.map(k => ({ k, G: gradePost(s, k, E) }));
+    const b = rated.find(r => r.G.v === 'good') || rated.find(r => r.G.v === 'ok') || rated[0];
+    return { kind: b.k, so: so(b.G.why), s };
+  }
   const botDecide = (g, i, rng) => {
     const lv = SKILL[g.players[i].level];
-    if (lv && lv.err && rng() < lv.err) return why(randomPlay(g, i, rng), 'A mistake: ' + g.players[i].name + ' is a ' + lv.name + ' player and plays more or less at random about ' + Math.round(lv.err * 100) + '% of the time — this was one of those. Real players at this level do the same.');
+    if (lv && lv.err && rng() < lv.err) {
+      const d = randomPlay(g, i, rng), name = g.players[i].name, L = legal(g, i);
+      const did = d.type === 'call' && L.toCall === 0 ? 'check' : d.type === 'raise' && !L.canRaise ? 'call' : d.type;
+      const who = name + ' is a ' + lv.name + ' player and plays more or less at random about ' + Math.round(lv.err * 100) + '% of the time — this was one of those. Real players at this level do the same.';
+      let sound = null; try { sound = soundPlay(g, i); } catch (e) { sound = null; }
+      if (!sound) return why(d, 'A random play: ' + who);
+      const right = verbOf(sound.kind, sound.s), reason = sound.so ? ' ' + sound.so.replace(/^./, c => c.toUpperCase()) : '';
+      if (sound.kind === did) return why(d, 'A fluke, but the right play: ' + who + ' This time the random choice was also the correct one — ' + right + '.' + reason);
+      return why(d, 'A mistake — the right play was to ' + right + '.' + reason + ' ' + who);
+    }
     return g.street === 0 ? botPreflop(g, i, rng) : botPostflop(g, i, rng);
   };
 
@@ -680,11 +703,12 @@ const Trainer = (() => {
     const has = key => chart(key).has(k);
     const you = 'Your hand: ' + k + ', ' + strength(k);
     if (x.raises === 0) {
+      const lim = x.limpers || 0, limTxt = lim === 1 ? 'one player just called the big blind (limped)' : lim + ' players just called the big blind (limped)';
       if (x.pos === 'BB') return has('ip3Early')
-        ? Adv('raise', ['check'], lines(you, 'The situation: nobody raised — only the small blind called.', 'So: with a hand this strong, raise and make them pay to see the flop.', 'Remember: from the big blind, raise your best hands and check the rest — your flop is free.'), 'rfi.BTN')
+        ? Adv('raise', ['check'], lines(you, 'The situation: nobody raised — ' + (lim ? limTxt : 'only the small blind called') + '.', 'So: with a hand this strong, raise and make them pay to see the flop.', 'Remember: from the big blind, raise your best hands and check the rest — your flop is free.'), 'rfi.BTN')
         : Adv('check', ['raise'], lines(you, 'The situation: nobody raised, so the flop is free for you.', 'So: check and see the flop.', 'Remember: never fold when checking costs nothing.'), null);
       const key = 'rfi.' + x.pos;
-      const sit = 'The situation: everyone folded to you in the ' + x.pos + '. From this seat, good players raise with about the best ' + share(key) + ' of hands.';
+      const sit = 'The situation: ' + (lim ? limTxt + ' in front of you and nobody has raised; you are in the ' + x.pos + '. From this seat, good players raise with about the best ' + share(key) + ' of hands — and raise a little bigger when there are limpers to charge.' : 'everyone folded to you in the ' + x.pos + '. From this seat, good players raise with about the best ' + share(key) + ' of hands.');
       return has(key)
         ? Adv('raise', [], lines(you, sit, 'So: ' + k + ' is good enough — raise.', 'Remember: the closer you sit to the button, the more hands you can raise, because fewer players are left behind you.'), key)
         : Adv('fold', [], lines(you, sit, 'So: ' + k + ' isn’t good enough from here — fold.', 'Remember: when you’re first in, raise or fold. Just calling (limping) lets everyone in cheaply.'), key);
@@ -1023,6 +1047,7 @@ const Trainer = (() => {
       street: g.street, pos: posOf(g, i), k: cls(p.cards[0], p.cards[1]), cards: p.cards.slice(), board: g.board.slice(),
       pot: L.pot, toCall: L.toCall, raises: g.raises, curBet: g.curBet, myBet: p.bet, maxTo: L.maxTo, openerPos: g.openerSeat >= 0 ? posOf(g, g.openerSeat) : '', heroOpened: g.openerSeat === i,
       facingAllIn: g.street === 0 && g.players.some((q, j) => j !== i && !q.folded && q.allin && q.bet >= g.curBet),
+      limpers: g.street === 0 && g.raises === 0 ? g.log.filter(l => l.st === 0 && l.kind === 'call').length : 0,   // players who just called the big blind before you
       opps: g.players.map((q, j) => ({ q, j })).filter(o => o.j !== i && !o.q.folded).map(o => ({ width: o.q.rangeW, post: o.q.post.slice(), name: o.q.name, pos: posOf(g, o.j) })),
     };
   }
