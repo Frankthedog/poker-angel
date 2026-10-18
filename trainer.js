@@ -1775,6 +1775,14 @@ const Trainer = (() => {
   // cards face up (you folded, or "Show the bots' cards") it's the bot's own reason; otherwise only
   // what the table can see — what that action says about their hand.
   function seatNote(i) {
+    if (i === me && me >= 0) {                                    // your own move: its grade and the gist
+      const d = decisions.filter(x => x.seat === me).pop();
+      if (g.over || !d || d.at !== g.acts.length - 1) return '';
+      const ls = String(d.G.why || '').split('\n').filter(Boolean), gist = ls.find(l => /^So:/.test(l)) || ls[0] || '';
+      // in the clear space just beyond the seat on your right (beside you it would cover that player)
+      const L = layout().seat, [x, y] = L[L.length - 1];
+      return '<div class="tr-note hero ' + d.G.v + '" style="left:calc(' + x + '% + 80px);top:' + y + '%"><b>' + esc(plain('You ' + (d.verb || d.kind) + ' · ' + d.G.head)) + '</b>' + esc(plain(gist.replace(/^So:\s*/, '').replace(/^./, c => c.toUpperCase()))) + '</div>';
+    }
     const log = g.watchLog || [], w = log[log.length - 1];
     if (g.over || !w || w.i !== i || w.at !== g.acts.length - 1 || i === me) return '';
     const p = g.players[i], open = opts.showBots || watchOn();
