@@ -1373,7 +1373,7 @@ const Trainer = (() => {
   let auto = null, autoClose = '';  // auto: { speed, timer, prevSpeak, … }; autoClose: the session's close, kept on screen until the next deal
   const autoOn = () => !!auto && !room;
   const AUTO_GAP = { slow: 3200, normal: 1600, fast: 600 }, AUTO_MOVE = { slow: 6500, normal: 3800, fast: 1500 }, AUTO_HAND_END = 2500;
-  const autoGap = () => (auto.calm ? 2200 : 0) + (CAN_SPEAK && opts.speak ? AUTO_GAP[auto.speed] : AUTO_MOVE[auto.speed]);
+  const autoGap = () => (auto.calm ? 2200 : 0) + (CAN_TALK() && opts.speak ? AUTO_GAP[auto.speed] : AUTO_MOVE[auto.speed]);
   const AUTO_MINS = [0, 10, 20, 30, 45, 60];
   const minsLeft = () => auto && auto.endAt ? Math.max(0, Math.ceil((auto.endAt - Date.now()) / 60000)) : 0;
   // Run for… and 🌙 Sleep story. Shown in the Play menu and again in the Angel's column while it plays.
@@ -1388,7 +1388,7 @@ const Trainer = (() => {
     if (room || auto) return;
     auto = { speed: opts.autoCalm ? 'slow' : (opts.autoSpeed || 'normal'), timer: 0, prevSpeak: opts.speak, t0: Date.now(),
       endAt: opts.autoMins ? Date.now() + opts.autoMins * 60000 : 0, calm: !!opts.autoCalm, hands: 0, lessons: [], lesson: '', intro: true, done: false };
-    if (CAN_SPEAK) opts.speak = true;
+    if (CAN_TALK()) opts.speak = true;
     spokenLast = ''; said = new Set(); ackId = null; token++;
     if (!g || g.over) { if (g && g.tour && g.tour.done) freshTable(); startHand(); }
     if (g && g.players[me]) g.players[me].name = 'Angel';
@@ -1408,14 +1408,14 @@ const Trainer = (() => {
   function autoSchedule() {
     if (!auto) return;
     clearTimeout(auto.timer);
-    const t0 = Date.now(), talk = CAN_SPEAK && opts.speak, over = !!(g && g.over);
+    const t0 = Date.now(), talk = CAN_TALK() && opts.speak, over = !!(g && g.over);
     let seen = false, endAt = 0;
     const tick = () => {
       if (!auto) return;
       if (!g) { autoStop(true); return; }
       const now = Date.now();
       if (!shown || tab !== 'play') { auto.timer = setTimeout(tick, 500); return; }       // paused while you're elsewhere; carries on when you're back
-      const speaking = talk && speechSynthesis.speaking, queued = talk && !speaking && speechSynthesis.pending;
+      const speaking = talk && voiceBusy(), queued = talk && !speaking && voiceQueued();
       if (speaking) { seen = true; endAt = 0; if (now - t0 < 60000) { auto.timer = setTimeout(tick, 200); return; } }
       if (queued && now - t0 < 4000) { auto.timer = setTimeout(tick, 200); return; }         // queued, not started yet
       if (queued) hush();                                                                      // the voice has stalled: clear it and carry on
@@ -2189,32 +2189,97 @@ const Trainer = (() => {
       .replace(/\s+/g, ' ').replace(/\s+([,.;:])/g, '$1').replace(/([,.;:])(?:\s*[,.;:])+/g, '$1').trim();
   }
   let spokenLast = '', speakTimer = 0;
-  function pickVoice() {
-    const vs = speechSynthesis.getVoices();
-    return vs.find(v => /en-GB/i.test(v.lang) && /natural|online/i.test(v.name)) || vs.find(v => /en-GB/i.test(v.lang)) || vs.find(v => /^en/i.test(v.lang)) || null;
+  // ---- which voice ----
+  // Two engines. This PC's own voices (speechSynthesis — free, nothing leaves the machine, but on most
+  // Windows PCs only a few dated voices are installed; pick the least robotic, or any the player chose).
+  // Or ElevenLabs through main.js (desktop app only): natural voices, or one the family recorded
+  // themselves. The Angel's pacing asks voiceBusy(), whichever engine is talking.
+  let voiceCfg = { engine: 'local', hasTtsKey: false, ttsVoice: '', ttsVoiceName: '' };
+  async function loadVoiceCfg() {
+    if (!window.api || !window.api.getConfig) return;
+    try { const c = await window.api.getConfig(); voiceCfg = { engine: c.ttsEngine || 'local', hasTtsKey: !!c.hasTtsKey, ttsVoice: c.ttsVoice || '', ttsVoiceName: c.ttsVoiceName || '' }; } catch (e) {}
   }
-  function speak(text) {
+  const HAS_TTS = () => !!(window.api && window.api.ttsSpeak) && voiceCfg.engine === 'eleven' && voiceCfg.hasTtsKey && !!voiceCfg.ttsVoice;
+  const CAN_TALK = () => CAN_SPEAK || HAS_TTS();
+  const localVoices = () => { try { return CAN_SPEAK ? speechSynthesis.getVoices() : []; } catch (e) { return []; } };
+  function pickVoice() {
+    const vs = localVoices();
+    const chosen = opts.voice && vs.find(v => v.name === opts.voice);
+    return chosen || vs.find(v => /en-GB/i.test(v.lang) && /natural|online|neural/i.test(v.name))
+      || vs.find(v => /^en/i.test(v.lang) && /natural|online|neural/i.test(v.name))
+      || vs.find(v => /en-GB/i.test(v.lang) && /Google UK English Female|Sonia|Libby|Hazel|Susan|Maisie/i.test(v.name))   // the gentler of the stock voices
+      || vs.find(v => /en-GB/i.test(v.lang) && !/George/i.test(v.name)) || vs.find(v => /en-GB/i.test(v.lang))
+      || vs.find(v => /^en/i.test(v.lang) && /Google|Zira|Jenny|Aria|Samantha/i.test(v.name)) || vs.find(v => /^en/i.test(v.lang)) || null;
+  }
+  const voiceLabel = () => HAS_TTS() ? '🎙 ' + (voiceCfg.ttsVoiceName || 'ElevenLabs voice') : (pickVoice() ? pickVoice().name.replace(/^Microsoft /, '').replace(/ - English.*$/, '') : 'this PC’s voice');
+  // sentences merged into passages: ~220 characters for the PC voice (a long utterance can stop part-way in
+  // Chromium), ~500 for ElevenLabs (fewer requests, better flow)
+  function passages(t, max) {
+    const parts = [];
+    for (const sentence of t.split(/(?<=[.!?:])\s+/)) {
+      if (parts.length && parts[parts.length - 1].length + sentence.length < max) parts[parts.length - 1] += ' ' + sentence; else parts.push(sentence);
+    }
+    return parts;
+  }
+  function speakLocal(parts) {
     if (!CAN_SPEAK) return;
-    const t = forSpeech(text); if (!t) return;
     try {
       speechSynthesis.cancel();
-      const v = pickVoice(), parts = [];
-      // a sentence at a time (merged up to ~220 characters): one long utterance can stop part-way in
-      // Chromium and leave the voice silent for the rest of the session
-      for (const sentence of t.split(/(?<=[.!?:])\s+/)) {
-        if (parts.length && parts[parts.length - 1].length + sentence.length < 220) parts[parts.length - 1] += ' ' + sentence; else parts.push(sentence);
-      }
+      const v = pickVoice(), calm = autoOn() && auto.calm;        // 🌙 sleep story: unhurried, lower, softer
       for (const part of parts) {
         const u = new SpeechSynthesisUtterance(part);
         if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-GB';
-        const calm = autoOn() && auto.calm;                        // 🌙 sleep story: unhurried, lower, softer
         u.rate = calm ? 0.82 : (opts.speakRate || 1); u.pitch = calm ? 0.88 : 1; u.volume = calm ? 0.8 : 1;
         speechSynthesis.speak(u);
       }
       if (speechSynthesis.paused) speechSynthesis.resume();
     } catch (e) { console.error('speech', e); }
   }
-  function hush() { if (CAN_SPEAK) try { speechSynthesis.cancel(); } catch (e) {} }
+  let ttsAudio = null, ttsBusy = false, ttsGen = 0, ttsFails = 0;
+  function ttsStop() { ttsGen++; ttsBusy = false; if (ttsAudio) { try { ttsAudio.pause(); } catch (e) {} ttsAudio = null; } }
+  async function ttsSay(parts) {
+    const gen = ++ttsGen; ttsBusy = true;
+    const calm = autoOn() && auto.calm, speed = calm ? 0.85 : (opts.speakRate || 1);
+    let k = 0;
+    try {
+      let next = window.api.ttsSpeak({ text: parts[0], speed, calm });              // the next passage is fetched while this one plays
+      for (k = 0; k < parts.length; k++) {
+        const r = await next; if (gen !== ttsGen) return;
+        next = k + 1 < parts.length ? window.api.ttsSpeak({ text: parts[k + 1], speed, calm }) : null;
+        if (!r) continue;
+        await new Promise(res => { const a = new Audio('data:' + r.mime + ';base64,' + r.b64); ttsAudio = a; a.onended = res; a.onerror = res; a.play().catch(res); });
+        if (gen !== ttsGen) return;
+      }
+      ttsFails = 0;
+    } catch (e) {
+      if (gen !== ttsGen) return;
+      ttsFails++;
+      toast('Voice: ' + cleanErr(e) + ' — reading with this PC’s voice for now', 'red');
+      speakLocal(parts.slice(k));
+    } finally { if (gen === ttsGen) { ttsBusy = false; ttsAudio = null; } }
+  }
+  function speak(text) {
+    if (!CAN_TALK()) return;
+    const t = forSpeech(text); if (!t) return;
+    ttsStop(); if (CAN_SPEAK) try { speechSynthesis.cancel(); } catch (e) {}
+    if (HAS_TTS() && ttsFails < 3) ttsSay(passages(t, 500)); else speakLocal(passages(t, 220));
+  }
+  function hush() { ttsStop(); if (CAN_SPEAK) try { speechSynthesis.cancel(); } catch (e) {} }
+  const voiceBusy = () => ttsBusy || (CAN_SPEAK && speechSynthesis.speaking);
+  const voiceQueued = () => !ttsBusy && CAN_SPEAK && !speechSynthesis.speaking && speechSynthesis.pending;
+  // The voice picker under the table: this PC's voices (and a Try button), or the ElevenLabs voice from ⚙ Settings.
+  function voiceSelHtml() {
+    if (!CAN_TALK()) return '';
+    if (HAS_TTS()) return '<span class="tr-voice">🎙 Voice: <b>' + esc(voiceCfg.ttsVoiceName || 'ElevenLabs') + '</b> <button class="ghost tr-mini" data-act="ui:voicetry">🔈 Try</button><span class="tr-dim">(change in ⚙ Settings → Voice)</span></span>';
+    const vs = localVoices(), cur = pickVoice();
+    const en = vs.filter(v => /^en/i.test(v.lang)), rest = vs.filter(v => !/^en/i.test(v.lang));
+    const opt = v => '<option value="' + esc(v.name) + '"' + (cur && v.name === cur.name ? ' selected' : '') + '>' + esc(v.name.replace(/^Microsoft /, '')) + '</option>';
+    return '<span class="tr-voice">🔈 Voice: <select data-sel="voice">' + en.map(opt).join('') + (rest.length ? '<optgroup label="Other languages">' + rest.map(opt).join('') + '</optgroup>' : '') + '</select>'
+      + '<select data-sel="speakRate" title="Reading speed">' + [[0.8, 'slower'], [0.9, 'a little slower'], [1, 'normal speed'], [1.1, 'a little faster'], [1.25, 'faster']].map(([r, n]) => '<option value="' + r + '"' + ((opts.speakRate || 1) === r ? ' selected' : '') + '>' + n + '</option>').join('') + '</select>'
+      + '<button class="ghost tr-mini" data-act="ui:voicetry">🔈 Try</button>'
+      + (window.api && window.api.ttsSpeak ? '<span class="tr-dim">Want a natural voice, or a family member’s own? ⚙ Settings → Voice.</span>' : '') + '</span>';
+  }
+  const VOICE_SAMPLE = 'This is how I’ll read the coaching. You have Ace King suited on the button. The pot is 9 big blinds and it costs 3 to call, so you need to win 1 time in 4. Raise to 10 big blinds.';
   // What the right-hand column says, minus buttons, drop-downs and stat tables.
   function panelText() {
     const el = $('trPanel'); if (!el) return '';
@@ -2254,7 +2319,7 @@ const Trainer = (() => {
     const el = $('trPanel'); if (!el) return;
     if (html && html !== panelLast && $('trSide')) $('trSide').scrollTop = 0;
     panelLast = html || '';
-    el.innerHTML = html ? (CAN_SPEAK ? '<div class="tr-row tr-speak"><button class="' + (opts.speak ? 'primary' : 'ghost') + ' tr-mini" data-act="ui:speaktoggle" title="Read each new explanation aloud, hand after hand, until you switch it off">' + (opts.speak ? '🔊 Read aloud: on' : '🔇 Read aloud: off') + '</button>'
+    el.innerHTML = html ? (CAN_TALK() ? '<div class="tr-row tr-speak"><button class="' + (opts.speak ? 'primary' : 'ghost') + ' tr-mini" data-act="ui:speaktoggle" title="Read each new explanation aloud, hand after hand, until you switch it off">' + (opts.speak ? '🔊 Read aloud: on' : '🔇 Read aloud: off') + '</button>'
       + '<button class="ghost tr-mini" data-act="ui:speak">↻ Read again</button><button class="ghost tr-mini" data-act="ui:hush" title="Stop this explanation — reading stays on for the next one">⏹ Stop</button></div>' : '') + html : '';
     if (html) autoSpeak();
   }
@@ -2359,7 +2424,7 @@ const Trainer = (() => {
     }
     const optsRow = levelSelHtml() + '<label><input type="checkbox" data-opt="advise"' + (opts.advise ? ' checked' : '') + ' /> Advise me before I act</label>'
       + '<label><input type="checkbox" data-opt="detail"' + (opts.detail ? ' checked' : '') + ' /> 📊 Detailed explanations (stat tables)</label>'
-      + (CAN_SPEAK ? '<label><input type="checkbox" data-opt="speak"' + (opts.speak ? ' checked' : '') + ' /> 🔊 Read explanations aloud</label>' : '')
+      + (CAN_TALK() ? '<label><input type="checkbox" data-opt="speak"' + (opts.speak ? ' checked' : '') + ' /> 🔊 Read explanations aloud</label>' + voiceSelHtml() : '')
       + '<label><input type="checkbox" data-opt="pause"' + (pauseOn() ? ' checked' : '') + ' /> Explain after I act' + (room ? '' : ' (and pause)') + '</label>'
       + (room ? '' : '<label><input type="checkbox" data-opt="showBots"' + (opts.showBots ? ' checked' : '') + ' /> Show the bots’ cards</label>')
       + (room ? '' : '<label title="Each bot move waits for Next move ▶, so you can read the comment beside the player. Untick to let the bots play at normal speed."><input type="checkbox" data-opt="stepBots"' + (opts.stepBots !== false ? ' checked' : '') + ' /> ⏯ Bots wait for Next</label>')
@@ -3152,6 +3217,7 @@ const Trainer = (() => {
       if (v === 'speak') { const t = forSpeech(panelText()); markSaid(t); speak(t); }
       if (v === 'speaktoggle') { opts.speak = !opts.speak; saveOpts(); spokenLast = ''; said = new Set(); if (!opts.speak) hush(); renderMain(); }
       if (v === 'hush') hush();
+      if (v === 'voicetry') speak(VOICE_SAMPLE);
     },
     ex: v => {
       if (v.indexOf('start:') === 0) return startExample(v.slice(6), 0);
@@ -3221,6 +3287,8 @@ const Trainer = (() => {
     const nav = $('navTrainer'); if (nav) nav.classList.remove('on');
   }
   function wire() {
+    loadVoiceCfg();
+    if (CAN_SPEAK) { try { speechSynthesis.onvoiceschanged = () => { if (shown && tab === 'play') renderPlay(); }; } catch (e) {} }
     const nav = $('navTrainer'); if (nav) nav.onclick = () => (shown ? close() : open());
     $('trTabs').onclick = (e) => { const b = pick(e, 'data-tab'); if (b) setTab(b.dataset.tab); };
     const onAct = (e) => {
@@ -3235,6 +3303,8 @@ const Trainer = (() => {
       const r = pick(e, 'data-room');
       if (r && isHost()) { room.faceUp = !!r.checked; broadcast(); renderPlay(); feed('', '<b>Cards: ' + (room.faceUp ? 'face up for everyone' : 'own cards only') + '</b>' + (room.faceUp ? 'Every card and grade is shown as it happens.' : 'Everyone’s cards and grades are revealed when each hand ends.')); return; }
       const sel = pick(e, 'data-sel'); if (sel && sel.dataset.sel === 'level') return setLevel(sel.value);
+      if (sel && sel.dataset.sel === 'voice') { opts.voice = sel.value; saveOpts(); speak(VOICE_SAMPLE); return; }
+      if (sel && sel.dataset.sel === 'speakRate') { opts.speakRate = parseFloat(sel.value) || 1; saveOpts(); speak(VOICE_SAMPLE); return; }
       const b = pick(e, 'data-opt'); if (!b) return;
       opts[b.dataset.opt] = !!b.checked; saveOpts();
       if (b.dataset.opt === 'showBots') renderPlay();
@@ -3253,8 +3323,10 @@ const Trainer = (() => {
     };
   }
 
+  // ⚙ Settings changed the voice: pick the new one up (app.js calls this when the dialog closes).
+  function voiceChanged() { loadVoiceCfg().then(() => { ttsFails = 0; if (shown && tab === 'play') renderPlay(); }); }
   return {
-    wire, open, close,
+    wire, open, close, voiceChanged, voiceLabel,
     _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech, storyHtml, levelWhy, COACH_LEVELS, primerHtml, HAND_RANKS, rankOf, setLevelForTest: v => { opts.level = v; } },
   };
 })();
