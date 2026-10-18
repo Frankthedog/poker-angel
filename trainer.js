@@ -1141,9 +1141,9 @@ const Trainer = (() => {
     const d = mine[mine.length - 1];
     return d && d.id !== ackId ? d : null;
   }
-  const holding = () => !room && pauseOn() && !!myPending() && g && !g.over && !watchOn();
+  const holding = () => !room && !autoOn() && pauseOn() && !!myPending() && g && !g.over && !watchOn();
   // While you're in the hand (solo), each bot move waits for Next move ▶, so its comment box can be read.
-  const stepBots = () => !room && opts.stepBots !== false && g && !g.over && me >= 0 && g.players[me] && !g.players[me].folded && !g.players[me].out && !isHuman(g.players[g.toAct]);
+  const stepBots = () => !room && !autoOn() && opts.stepBots !== false && g && !g.over && me >= 0 && g.players[me] && !g.players[me].folded && !g.players[me].out && !isHuman(g.players[g.toAct]);
   let room = null;                  // { role, code, peer, conns (host: Map conn → {seat,name,pending}), conn (guest), faceUp, players }
   const shownDec = new Set();       // decisions already in my feed
   let summarized = 0, introduced = 0;
@@ -1163,7 +1163,7 @@ const Trainer = (() => {
     // what a web guest needs to rebuild this hand: the table just before the deal, and the shuffle's seed
     g.start = { button: g.button, handNo: g.handNo, lastBB: g.lastBB, prevAlive: g.prevAlive, tour: g.tour ? JSON.parse(JSON.stringify(g.tour)) : null };
     g.seed = Math.floor(Math.random() * 4294967296) >>> 0;
-    newHand(g, mulberry(g.seed)); decisions = []; token++;
+    newHand(g, mulberry(g.seed)); decisions = []; token++; autoClose = '';
     onHandState();
     broadcast();
     step();
@@ -1177,7 +1177,7 @@ const Trainer = (() => {
   }
   // You folded (solo): the rest of the hand plays one action per Next, the bots' cards face up and each
   // move explained. Fast-fold, when on, skips it as before.
-  const watchOn = () => !room && opts.watch !== false && g && me >= 0 && g.players[me] && g.players[me].folded && !g.players[me].out;
+  const watchOn = () => !room && !autoOn() && opts.watch !== false && g && me >= 0 && g.players[me] && g.players[me].folded && !g.players[me].out;
   const watching = () => watchOn() && !g.over && !fastFolding();
   function watchPlay(all) {
     let guard = 0;
@@ -1196,11 +1196,130 @@ const Trainer = (() => {
       + (before.length ? '<details><summary>Why they played as they did before you folded (' + before.length + ')</summary>' + before.map(line).join('') + '</details>' : '')
       + '</div>';
   }
+  // ---- 🎬 Watch the Angel play ----------------------------------------------------------------------
+  // Sit back: the Angel takes your seat and plays hand after hand with the trainer's own best play —
+  // every card face up, every move (its own and the bots') explained beside the player and in the
+  // column, and read aloud. The loop paces itself: a move, its commentary, then — once the voice has
+  // finished — the next; a finished hand lingers a little longer before the next deal. Nothing the
+  // Angel does counts in your stats, and Stop hands the seat back mid-hand.
+  let auto = null, autoClose = '';  // auto: { speed, timer, prevSpeak, … }; autoClose: the session's close, kept on screen until the next deal
+  const autoOn = () => !!auto && !room;
+  const AUTO_GAP = { slow: 3200, normal: 1600, fast: 600 }, AUTO_MOVE = { slow: 6500, normal: 3800, fast: 1500 }, AUTO_HAND_END = 2500;
+  const autoGap = () => (auto.calm ? 2200 : 0) + (CAN_SPEAK && opts.speak ? AUTO_GAP[auto.speed] : AUTO_MOVE[auto.speed]);
+  const AUTO_MINS = [0, 10, 20, 30, 45, 60];
+  const minsLeft = () => auto && auto.endAt ? Math.max(0, Math.ceil((auto.endAt - Date.now()) / 60000)) : 0;
+  // Run for… and 🌙 Sleep story. Shown in the Play menu and again in the Angel's column while it plays.
+  function autoOptsHtml() {
+    const cur = opts.autoMins || 0;
+    return '<span class="tr-dim">⏱ Run for:</span>' + AUTO_MINS.map(m => '<button class="' + (m === cur ? 'primary' : 'ghost') + ' tr-mini" data-act="play:automins" data-v="' + m + '">' + (m ? m + ' min' : 'until I stop') + '</button>').join('')
+      + '<label title="A slower, lower, softer voice and an unhurried pace — the same full explanations, told gently enough to drift off to. Ends quietly when the time is up."><input type="checkbox" data-opt="autoCalm"' + (opts.autoCalm ? ' checked' : '') + ' /> 🌙 Sleep story: calm voice, slow pace</label>';
+  }
+  const AUTO_BTN = '<button class="ghost" data-act="play:auto" title="The Angel plays your seat hand after hand — every card face up, every move explained and read aloud. Press Stop to take the seat back.">🎬 Let the Angel play</button>';
+  const autoBar = () => '<span class="tr-wait">' + (auto.calm ? '🌙' : '🎬') + ' The Angel is playing — every card face up, every move explained' + (CAN_SPEAK ? ' and read aloud' : '') + (auto.endAt && !auto.done ? ' · ' + minsLeft() + ' min left' : '') + '.</span><button class="ghost" data-act="play:autostop">⏹ Stop — I’ll play</button>';
+  function autoStart() {
+    if (room || auto) return;
+    auto = { speed: opts.autoCalm ? 'slow' : (opts.autoSpeed || 'normal'), timer: 0, prevSpeak: opts.speak, t0: Date.now(),
+      endAt: opts.autoMins ? Date.now() + opts.autoMins * 60000 : 0, calm: !!opts.autoCalm, hands: 0, lessons: [], lesson: '', intro: true, done: false };
+    if (CAN_SPEAK) opts.speak = true;
+    spokenLast = ''; said = new Set(); ackId = null; token++;
+    if (!g || g.over) { if (g && g.tour && g.tour.done) freshTable(); startHand(); }
+    if (g && g.players[me]) g.players[me].name = 'Angel';
+    if (g) step();
+    toast('🎬 The Angel is playing — press Stop whenever you want the seat back', 'green');
+  }
+  function autoStop(silent) {
+    if (!auto) return;
+    clearTimeout(auto.timer);
+    opts.speak = auto.prevSpeak; auto = null; hush(); token++;
+    if (g && g.players[me] && g.players[me].name === 'Angel') g.players[me].name = 'You';
+    if (silent) return;
+    toast('The seat is yours again', '');
+    if (shown && tab === 'play') { renderPlay(); step(); }
+  }
+  // Wait for the commentary to be read (if the voice is on), then a pause for it to sink in, then move.
+  function autoSchedule() {
+    if (!auto) return;
+    clearTimeout(auto.timer);
+    const t0 = Date.now(), talk = CAN_SPEAK && opts.speak, over = !!(g && g.over);
+    let seen = false, endAt = 0;
+    const tick = () => {
+      if (!auto) return;
+      if (!g) { autoStop(true); return; }
+      const now = Date.now();
+      if (!shown || tab !== 'play') { auto.timer = setTimeout(tick, 500); return; }       // paused while you're elsewhere; carries on when you're back
+      const speaking = talk && speechSynthesis.speaking, queued = talk && !speaking && speechSynthesis.pending;
+      if (speaking) { seen = true; endAt = 0; if (now - t0 < 60000) { auto.timer = setTimeout(tick, 200); return; } }
+      if (queued && now - t0 < 4000) { auto.timer = setTimeout(tick, 200); return; }         // queued, not started yet
+      if (queued) hush();                                                                      // the voice has stalled: clear it and carry on
+      if (talk && !seen && !queued && now - t0 < 2500) { auto.timer = setTimeout(tick, 200); return; }   // give the voice time to start
+      if (!endAt) endAt = now + autoGap() + (over ? AUTO_HAND_END + (auto.calm ? 2500 : 0) : 0);
+      if (now < endAt) { auto.timer = setTimeout(tick, Math.min(250, endAt - now)); return; }
+      autoTick();
+    };
+    auto.timer = setTimeout(tick, 50);
+  }
+  // One move: the Angel's (the trainer's recommended play, with its reasons kept for the column) or a bot's.
+  function autoTick() {
+    if (!auto) return;
+    if (!g) { autoStop(true); return; }
+    if (me < 0 || !g.players[me] || g.players[me].out) { autoStop(); return; }
+    if (auto.done) { autoClose = autoHtml(); autoStop(true); renderPlay(); return; }
+    if (g.over) {
+      if (g.tour && g.tour.done) { autoStop(); return; }
+      if (auto.endAt && Date.now() >= auto.endAt) { auto.done = true; hush(); spokenLast = ''; renderPlay(); autoSchedule(); return; }   // the close is read, then the seat is yours
+      auto.hands++; auto.intro = false; startHand(); return;
+    }
+    if (g.toAct === me) {
+      const a = adviceNow(), o = a && a.list.find(x => x.best);
+      const kind = o ? o.kind : 'fold', to = o ? o.to : 0;
+      (g.watchLog || (g.watchLog = [])).push({ i: me, st: g.street, at: g.acts.length, txt: '', why: a ? a.why : '', head: a ? a.do : 'Fold' });
+      const rem = a && String(a.why).split('\n').find(l => /^Remember:/.test(l));
+      if (rem) { auto.lesson = rem.replace(/^Remember:\s*/, ''); auto.lessonHand = g.handNo; if (auto.lessons.indexOf(auto.lesson) < 0) auto.lessons.push(auto.lesson); }
+      doAct(me, kind, to);
+      const w = g.watchLog[g.watchLog.length - 1], last = g.log.filter(l => l.i === me && l.kind !== 'post').pop();
+      if (w && last && !w.txt) { w.txt = last.txt; renderPlay(); }
+      return;
+    }
+    try { botMove(); } catch (e) { console.error('trainer bot', e); autoStop(); return; }
+    step();
+  }
+  // The column while the Angel plays: the latest move and why, the hand so far (not read aloud), and the controls.
+  function autoHtml() {
+    if (!autoOn() || !g) return '';
+    const log = g.watchLog || [], w = log[log.length - 1], hero = g.players[me];
+    let body;
+    if (auto.done) {
+      const mins = Math.max(1, Math.round((Date.now() - auto.t0) / 60000)), n = auto.hands + (g.over ? 1 : 0);
+      // (this block is also what autoClose keeps once the Angel has stopped)
+      body = '<div class="tr-why"><b class="tr-lbl">That’s the end of this session.</b> ' + n + ' hand' + (n === 1 ? '' : 's') + ' in ' + mins + ' minute' + (mins === 1 ? '' : 's') + '.</div>'
+        + (auto.lessons.length ? '<div class="tr-why"><b class="tr-lbl">What to keep from tonight:</b>\n' + esc(plain(auto.lessons.slice(-6).map((l, k) => (k + 1) + '. ' + l).join('\n'))) + '</div>' : '')
+        + '<div class="tr-why">' + (auto.calm ? 'Sleep well. The seat is yours whenever you come back.' : 'The seat is yours again.') + '</div>';
+    } else if (g.over && g.result) {
+      body = '<div class="tr-why"><b class="tr-lbl">Hand over.</b> ' + esc(plain(g.result.wins.map(x => (x.i === me ? 'The Angel wins ' : g.players[x.i].name + ' wins ') + bbs(r2(x.amt)) + (x.name ? ' with ' + x.name : '')).join(' · ')))
+        + (g.result.showdown ? '.' : ' — everyone else folded.') + '</div>'
+        + (auto.lesson && auto.lessonHand === g.handNo ? '<div class="tr-why"><b class="tr-lbl">Lesson from this hand:</b> ' + esc(plain(auto.lesson)) + '</div>' : '')
+        + '<div class="tr-dim">Next hand in a moment…</div>';
+    } else if (w) {
+      const p = g.players[w.i], who = w.i === me ? 'The Angel' : p.name;
+      body = '<div class="tr-why"><b class="tr-lbl">' + esc(plain(who + ' (' + posOf(g, w.i) + ') ' + w.txt)) + '</b> <span class="tr-dim">' + esc(cardsTxt(p.cards) + (w.i === me ? '' : ' · ' + botLabel(p))) + '</span></div>'
+        + (w.i === me ? '<div class="tr-why">' + fmtWhy(w.why) + '</div>'
+          : '<div class="tr-why">' + esc(plain(w.why)) + (STYLE_HOW[p.style] ? '\n<i class="tr-dim">How a ' + esc(styleName(p.style)) + ' player plays: ' + esc(STYLE_HOW[p.style]) + '</i>' : '') + '</div>');
+    } else body = (auto.intro ? '<div class="tr-why">' + (auto.calm ? 'Settle in. ' : '') + 'The Angel plays hand after hand in your seat, every card face up, and explains each move — its own and the bots’ — with the numbers and the reasons.' + (auto.endAt ? ' It will play for ' + opts.autoMins + ' minutes and then close quietly.' : '') + '</div>' : '')
+      + '<div class="tr-why">' + esc(plain('New hand. The Angel is in the ' + posOf(g, me) + ' with ' + (hero && hero.cards && hero.cards.length ? cardsTxt(hero.cards) : 'no cards yet') + '.')) + '</div>';
+    const sp = v => '<button class="' + (auto.speed === v ? 'primary' : 'ghost') + ' tr-mini" data-act="play:autospeed" data-v="' + v + '">' + v + '</button>';
+    if (auto.done) return '<div class="tr-advice tr-auto"><b>' + (auto.calm ? '🌙' : '🎬') + ' The Angel’s session</b>' + body + '</div>';
+    return '<div class="tr-advice tr-auto"><b>' + (auto.calm ? '🌙' : '🎬') + ' The Angel plays · hand #' + g.handNo + (auto.endAt && !auto.done ? ' · ' + minsLeft() + ' min left' : '') + '</b>' + body
+      + '<div class="tr-row tr-nosay"><button class="ghost tr-mini" data-act="play:autostop">⏹ Stop — I’ll play</button><span class="tr-dim">Pace:</span>' + sp('slow') + sp('normal') + sp('fast') + '</div>'
+      + '<div class="tr-row tr-nosay">' + autoOptsHtml() + '</div></div>'
+      + '<div class="tr-nosay">' + storyHtml(g, me, true) + '</div>';
+  }
+
   // Bots act on the host (or solo). A person's turn waits for them.
   function step() {
     if (tab === 'play') renderPlay(); else renderSpot();
     if (!g || isGuest()) return;
-    if (g.over) { if (!g._done) handEnd(); return; }
+    if (g.over) { if (!g._done) handEnd(); if (autoOn()) autoSchedule(); return; }
+    if (autoOn()) { autoSchedule(); return; }                     // 🎬 the Angel's loop paces every move (its own and the bots')
     if (isHuman(g.players[g.toAct])) return;
     if (holding()) return;                                        // waiting for me to press Continue
     if (watching()) return;                                       // you folded: each move waits for Next
@@ -1234,7 +1353,7 @@ const Trainer = (() => {
     const G = short || withSizing(s.street ? gradePost(s, kind, E) : gradePre(s, kind), s, kind, Math.max(L.minTo, Math.min(L.maxTo, half(Number(to) || 0))), E);
     const live = g.players.filter((q, j) => j !== i && !q.folded);
     const Eact = (room || opts.showBots) && live.length ? equityVsRanges(s.cards, s.board, live.map(q => ({ fixed: q.cards })), 2000) : null;
-    decisions.push({ id: handKey() + '.' + decisions.length, at: (g.acts || []).length, seat: i, name: g.players[i].name, street: s.street, kind, verb: verbOf(kind, s), G, E, Eact, detail: detailFor(g, i, E) });
+    decisions.push({ id: handKey() + '.' + decisions.length, at: (g.acts || []).length, seat: i, name: g.players[i].name, street: s.street, kind, verb: verbOf(kind, s), G, E, Eact, detail: detailFor(g, i, E), auto: autoOn() && i === me });
     act(g, i, { type: kind, to });
   }
   // Runs on the host (or solo) for every person's action.
@@ -1310,11 +1429,12 @@ const Trainer = (() => {
   // Street by street from the log: runs of folds collapsed, you named "You", the board as it came out,
   // then the pot, who's still in and what you're facing — so the decision can be read without
   // scanning the table.
-  function storyHtml(G, M) {
+  function storyHtml(G, M, force) {
     const g = G || Trainer_g(), me = M == null ? Trainer_me() : M;   // the live hand unless a test passes one in
-    if (!g || g.over || me < 0 || g.toAct !== me) return '';
-    const name = i => i === me ? 'You' : g.players[i].name + ' (' + posOf(g, i) + ')';
-    const verb = l => l.i === me ? l.txt.replace(/^(posts|folds|calls|checks|bets|raises)/, (_, v) => ({ posts: 'post', folds: 'fold', calls: 'call', checks: 'check', bets: 'bet', raises: 'raise' }[v])) : l.txt;
+    if (!g || g.over || me < 0 || (!force && g.toAct !== me)) return '';
+    const angel = autoOn(), mine = g.toAct === me;
+    const name = i => i === me ? (angel ? 'The Angel' : 'You') : g.players[i].name + ' (' + posOf(g, i) + ')';
+    const verb = l => l.i === me && !angel ? l.txt.replace(/^(posts|folds|calls|checks|bets|raises)/, (_, v) => ({ posts: 'post', folds: 'fold', calls: 'call', checks: 'check', bets: 'bet', raises: 'raise' }[v])) : l.txt;
     const streets = [];
     for (let st = 0; st <= g.street; st++) {
       const acts = g.log.filter(l => l.st === st && l.kind !== 'post');
@@ -1327,12 +1447,12 @@ const Trainer = (() => {
           k += n - 1;
         } else parts.push(name(acts[k].i) + ' ' + verb(acts[k]));
       }
-      if (!parts.length && st === g.street) parts.push('You act first.');
+      if (!parts.length && st === g.street) parts.push(mine ? (angel ? 'The Angel acts first.' : 'You act first.') : 'No action yet.');
       streets.push('<div><b class="tr-lbl">' + STREET[st] + (b.length ? ' ' + b.map(c => cardHtml(c)).join('') : '') + '</b> ' + esc(plain(parts.join(' · '))) + (parts.length && !/\.$/.test(parts[parts.length - 1]) ? '.' : '') + '</div>');
     }
     const L = legal(g, me), live = g.players.filter((q, j) => j !== me && !q.folded && !q.out).length;
-    const facing = L.toCall > 0 ? 'Facing ' + bbs(L.toCall) + ' to call' + (g.players.filter(q => q.allin && !q.folded).length ? ' (someone is all-in)' : '') : 'No bet to you';
-    const now = 'Pot ' + bbs(r2(L.pot)) + ' · ' + live + ' opponent' + (live === 1 ? '' : 's') + ' still in · ' + facing + '.';
+    const facing = !mine ? (g.toAct >= 0 ? g.players[g.toAct].name + ' to act' : '') : L.toCall > 0 ? 'Facing ' + bbs(L.toCall) + ' to call' + (g.players.filter(q => q.allin && !q.folded).length ? ' (someone is all-in)' : '') : 'No bet to ' + (angel ? 'the Angel' : 'you');
+    const now = 'Pot ' + bbs(r2(L.pot)) + ' · ' + live + ' opponent' + (live === 1 ? '' : 's') + ' still in' + (facing ? ' · ' + facing : '') + '.';
     return '<div class="tr-explain tr-story"><b>📜 So far this hand</b>' + streets.join('') + '<div class="tr-now">' + esc(plain(now)) + '</div></div>';
   }
   function adviceHtml() {
@@ -1379,13 +1499,13 @@ const Trainer = (() => {
       introduced = handKey();
       const p = g.players[me], T = g.tour;
       if (T && g.handNo === 1) feed('', '<b>🏆 Tournament started</b>' + esc(tourLine(g)) + '\nPrizes: ' + T.payouts.map((v, k) => ordinal(k + 1) + ' $' + v).join(' · ') + ' (pool $' + T.pool + ').');
-      if (me >= 0 && p && p.cards && p.cards.length) feed('', '<b>Hand #' + g.handNo + (T ? ' · Level ' + (T.level + 1) : '') + '</b>You are in the ' + posOf(g, me) + ' with ' + esc(cardsTxt(p.cards)) + ' (' + cls(p.cards[0], p.cards[1]) + ')' + (T ? ', ' + r1(p.stack + p.bet) + 'bb.' : '.'));
+      if (me >= 0 && p && p.cards && p.cards.length) feed('', '<b>Hand #' + g.handNo + (T ? ' · Level ' + (T.level + 1) : '') + '</b>' + (autoOn() ? 'The Angel is' : 'You are') + ' in the ' + posOf(g, me) + ' with ' + esc(cardsTxt(p.cards)) + ' (' + cls(p.cards[0], p.cards[1]) + ')' + (T ? ', ' + r1(p.stack + p.bet) + 'bb.' : '.'));
       else if (!(T && p && p.out)) feed('', '<b>Hand #' + g.handNo + '</b>Watching — you’re dealt in from the next ' + (T ? 'game.' : 'hand.'));
     }
     for (const d of visibleDecisions(me)) {
       if (shownDec.has(d.id)) continue;
       shownDec.add(d.id);
-      if (d.seat === me) tally(d.G);
+      if (d.seat === me && !d.auto) tally(d.G);              // the Angel's own play isn't your record
       rateAdd(d);
       feed('', decHtml(d));
     }
@@ -1454,20 +1574,25 @@ const Trainer = (() => {
   function summarize() {
     summarized = handKey();
     const mine = decisions.filter(d => d.seat === me), T = g.tour;
+    const counts = !autoOn() && !mine.some(d => d.auto);          // a hand the Angel played isn't part of your session
     let head = 'Hand #' + g.handNo + ' over';
     if (me >= 0 && g.players[me] && T) {
       const net = r2(g.players[me].stack - g.startStacks[me]);
-      stats.hands++;
-      if (mine.some(d => d.street === 0 && (d.kind === 'call' || d.kind === 'raise'))) stats.vpip++;
-      if (mine.some(d => d.street === 0 && d.kind === 'raise')) stats.pfr++;
-      saveStats();
+      if (counts) {
+        stats.hands++;
+        if (mine.some(d => d.street === 0 && (d.kind === 'call' || d.kind === 'raise'))) stats.vpip++;
+        if (mine.some(d => d.street === 0 && d.kind === 'raise')) stats.pfr++;
+        saveStats();
+      }
       if (!g.players[me].out) head += ': ' + (net >= 0 ? '+' : '') + bbs(net);
     } else if (me >= 0 && g.players[me]) {
       const net = r2(g.players[me].stack - 100);
-      stats.hands++; stats.net = r2(stats.net + net);
-      if (mine.some(d => d.street === 0 && (d.kind === 'call' || d.kind === 'raise'))) stats.vpip++;
-      if (mine.some(d => d.street === 0 && d.kind === 'raise')) stats.pfr++;
-      saveStats();
+      if (counts) {
+        stats.hands++; stats.net = r2(stats.net + net);
+        if (mine.some(d => d.street === 0 && (d.kind === 'call' || d.kind === 'raise'))) stats.vpip++;
+        if (mine.some(d => d.street === 0 && d.kind === 'raise')) stats.pfr++;
+        saveStats();
+      }
       head += ': ' + (net >= 0 ? '+' : '') + bbs(net);
     }
     const res = g.result.wins.map(w => (w.i === me ? 'You win ' : g.players[w.i].name + ' wins ') + bbs(r2(w.amt)) + (w.name ? ' — ' + w.name : '')).join('\n');
@@ -1516,7 +1641,7 @@ const Trainer = (() => {
   }
   // Fast-fold (from PokerStars' Zoom): solo cash games only. Once you fold, you're dealt straight into
   // the next hand — after you've read the explanation, if "Explain after I act" is on.
-  const fastFolding = () => !room && g && !g.tour && opts.fastFold && g.players[me] && g.players[me].folded;
+  const fastFolding = () => !room && !autoOn() && g && !g.tour && opts.fastFold && g.players[me] && g.players[me].folded;
   function handEnd() {
     g._done = true;
     onHandState();
@@ -1563,7 +1688,7 @@ const Trainer = (() => {
     if (noPeer() || room) return;
     const code = newCode();
     const peer = new Peer(PEER_PREFIX + code.toLowerCase());
-    room = { role: 'host', code, peer, conns: new Map(), faceUp: true, status: 'Opening the table…' }; ratings = {};
+    autoStop(true); room = { role: 'host', code, peer, conns: new Map(), faceUp: true, status: 'Opening the table…' }; ratings = {};
     me = 0; g = null; decisions = []; token++; renderPlay();       // any solo hand in progress is abandoned
     peer.on('open', () => { if (room && room.peer === peer) { room.status = ''; renderPlay(); feed('', '<b>👥 Table ' + code + ' is open</b>Send your friends the code. They open Poker Angel → 🎓 Trainer → Join, and type it in.'); } });
     peer.on('connection', (conn) => {
@@ -1648,7 +1773,7 @@ const Trainer = (() => {
     code = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (code.length !== 5) { toast('A table code is 5 letters/numbers', 'red'); return; }
     const peer = new Peer();
-    room = { role: 'guest', code, peer, conn: null, faceUp: true, players: [], status: 'Connecting to table ' + code + '…' }; ratings = {};
+    autoStop(true); room = { role: 'guest', code, peer, conn: null, faceUp: true, players: [], status: 'Connecting to table ' + code + '…' }; ratings = {};
     g = null; me = -1; decisions = []; renderPlay();
     const giveUp = setTimeout(() => { if (room && room.peer === peer && !(room.conn && room.conn.open)) { toast('Couldn’t reach table ' + code + ' — check the code and that the host is still there', 'red'); leaveRoom(true); } }, 20000);
     peer.on('open', () => {
@@ -1711,7 +1836,7 @@ const Trainer = (() => {
     const R = await roomCap().catch(() => null);
     if (!R) { toast('Playing with friends works when this page is open on claude.ai and you’re signed in', 'red'); return; }
     const code = newCode();
-    room = { role: 'host', web: true, code, conns: new Map(), faceUp: true, status: 'Opening the table…' }; ratings = {};
+    autoStop(true); room = { role: 'host', web: true, code, conns: new Map(), faceUp: true, status: 'Opening the table…' }; ratings = {};
     me = 0; g = null; decisions = []; token++; renderPlay();
     try { room.r = await R.join(roomName(code)); } catch (e) { room = null; toast('Couldn’t open a table (' + (e && e.code || 'error') + ')', 'red'); renderPlay(); return; }
     room.status = '';
@@ -1755,7 +1880,7 @@ const Trainer = (() => {
     if (code.length !== 5) { toast('A table code is 5 letters or numbers', 'red'); return; }
     const R = await roomCap().catch(() => null);
     if (!R) { toast('Playing with friends works when this page is open on claude.ai and you’re signed in', 'red'); return; }
-    room = { role: 'guest', web: true, code, faceUp: true, players: [], status: 'Looking for table ' + code + '…' }; ratings = {};
+    autoStop(true); room = { role: 'guest', web: true, code, faceUp: true, players: [], status: 'Looking for table ' + code + '…' }; ratings = {};
     g = null; me = -1; decisions = []; renderPlay();
     try { room.r = await R.join(roomName(code)); } catch (e) { room = null; toast('Couldn’t join (' + (e && e.code || 'error') + ')', 'red'); renderPlay(); return; }
     const mine = room;
@@ -1829,7 +1954,7 @@ const Trainer = (() => {
       const d = decisions.filter(q => q.seat === me).pop();
       if (d && d.at === g.acts.length - 1) {                      // the move you just made: its grade and the gist
         const ls = String(d.G.why || '').split('\n').filter(Boolean), gist = ls.find(l => /^So:/.test(l)) || ls[0] || '';
-        return box(d.G.v, 'You ' + (d.verb || d.kind) + ' · ' + d.G.head, gist.replace(/^So:\s*/, '').replace(/^./, c => c.toUpperCase()));
+        return box(d.G.v, (autoOn() ? 'The Angel: ' : 'You ') + (d.verb || d.kind) + ' · ' + d.G.head, gist.replace(/^So:\s*/, '').replace(/^./, c => c.toUpperCase()));
       }
       if (g.toAct !== me || p.folded) return '';
       // your turn: what you hold and what it costs — not the answer (that's 💡 Hint / "Advise me")
@@ -1846,7 +1971,7 @@ const Trainer = (() => {
     }
     const log = g.watchLog || [], w = log[log.length - 1];
     if (g.over || !w || w.i !== i || w.at !== g.acts.length - 1 || i === me) return '';
-    const p = g.players[i], open = opts.showBots || watchOn();
+    const p = g.players[i], open = opts.showBots || watchOn() || autoOn();
     const read = p.folded ? 'Out of this hand.' : p.rangeW >= 0.99 ? 'Could still have any two cards.' : 'Likely holds one of the best ' + r1(p.rangeW * 100) + '% of hands.';
     const body = open && w.why ? w.why : read + (STYLE_HOW[p.style] ? '\n' + styleName(p.style) + ': ' + STYLE_HOW[p.style] : '');
     const [x, y] = layout().seat[view(i)], side = x < 0 || x > 100 ? (x < 50 ? 'r' : 'l')                     // side seats: in over the felt's edge
@@ -1860,7 +1985,7 @@ const Trainer = (() => {
         + '<span class="stk">Out — ' + ordinal(T.place[i]) + (T.prize[i] ? ' · $' + T.prize[i] : '') + '</span></div></div>';
     }
     const won = g.over && g.result && g.result.wins.find(w => w.i === i);
-    const show = mine || (room ? (room.faceUp || g.over) : (opts.showBots || watchOn() || (g.over && g.result.showdown && !p.folded)));
+    const show = mine || (room ? (room.faceUp || g.over) : (autoOn() || opts.showBots || watchOn() || (g.over && g.result.showdown && !p.folded)));
     const folded = p.folded && !(room && g.over);
     const cards = folded || !p.cards ? (p.folded ? '' : backHtml(mine ? 'lg' : '') + backHtml(mine ? 'lg' : ''))
       : p.cards.map(c => show ? cardHtml(c, mine ? 'lg' : '') : backHtml(mine ? 'lg' : '')).join('');
@@ -1914,7 +2039,8 @@ const Trainer = (() => {
       for (const part of parts) {
         const u = new SpeechSynthesisUtterance(part);
         if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-GB';
-        u.rate = opts.speakRate || 1;
+        const calm = autoOn() && auto.calm;                        // 🌙 sleep story: unhurried, lower, softer
+        u.rate = calm ? 0.82 : (opts.speakRate || 1); u.pitch = calm ? 0.88 : 1; u.volume = calm ? 0.8 : 1;
         speechSynthesis.speak(u);
       }
       if (speechSynthesis.paused) speechSynthesis.resume();
@@ -1925,7 +2051,7 @@ const Trainer = (() => {
   function panelText() {
     const el = $('trPanel'); if (!el) return '';
     const c = el.cloneNode(true);
-    c.querySelectorAll('button, details, .tr-detail, .tr-speak, input, select, .tr-optlist').forEach(x => x.remove());
+    c.querySelectorAll('button, details, .tr-detail, .tr-speak, input, select, .tr-optlist, .tr-nosay').forEach(x => x.remove());
     // a pause after each heading and block, and at each line break, so sentences don't run together
     c.querySelectorAll('div, b:not(.tr-lbl), br').forEach(x => x.after('. '));
     return c.textContent.replace(/\n+/g, '. ');
@@ -2018,7 +2144,9 @@ const Trainer = (() => {
       }
       m.innerHTML = '<div class="tr-drill">' + dailyHtml() + '<div class="tr-q"><b>Play 8-handed No-Limit Hold’em.</b><br>Blinds 0.5/1, everyone 100bb deep every hand. Bots play real styles — tight, loose, passive, a calling station, a maniac — and their style is on their seat, so you can practise adjusting to it.<br><br>Every decision is graded on the right as it’s made: preflop against the charts, after the flop on equity against what each opponent’s actions say they hold, and the pot odds. When it’s your turn, the right-hand column sums up the hand so far and says what to do, with the size; when a hand ends the AI coach can talk you through it.</div>'
         + '<div class="tr-row">' + fieldHtml() + '</div>'
-        + '<div class="tr-row"><button data-act="play:next">🃏 Play cash hands against the bots</button></div>'
+        + '<div class="tr-row"><button data-act="play:next">🃏 Play cash hands against the bots</button>' + AUTO_BTN + '</div>'
+        + '<div class="tr-q" style="margin-top:4px">🎬 <b>Watch the Angel play</b> — sit back while the Angel plays hand after hand in your seat: every card face up, every move (its own and the bots’) explained beside the player and in the column on the right, with the bet sizes and the strategy behind them' + (CAN_SPEAK ? ', read aloud as it goes' : '') + '. Press Stop whenever you want the seat back.</div>'
+        + '<div class="tr-row">' + autoOptsHtml() + '</div>'
         + '<div class="tr-q" style="margin-top:8px"><b>🏆 Tournament</b> — a sit-and-go against the bots: blinds rise, the big blind posts an ante (as at the WSOP), players are knocked out and the top places are paid. Once stacks are short, every shove, fold and call is graded in prize money (ICM) next to the chip-only answer.</div>'
         + tourOptsHtml() + '<div class="tr-row"><button data-act="tour:start">🏆 Start a tournament</button></div>'
         + '<div class="tr-q" style="margin-top:8px"><b>Play with friends</b> — over the internet, everyone graded, everyone learning together. ' + (IN_BROWSER ? 'Friends open this same page — nothing to install.' : 'Each friend needs Poker Angel.') + '</div>'
@@ -2030,13 +2158,15 @@ const Trainer = (() => {
     const T = g.tour, felt = feltHtml();
     let actions;
     const extras = (HAS_AI ? '<button class="ghost" data-act="play:ai">🤖 Ask the AI coach about this hand</button>' : '') + '<button class="ghost" data-act="play:copy">📋 Copy hand history</button>';
-    const pend = pauseOn() ? myPending() : null;
+    const pend = pauseOn() && !autoOn() && !autoClose ? myPending() : null;
     const panel = pend ? '<div class="tr-explain">' + decHtml(pend, true)
       + (g.over ? '' : '<div class="tr-row">' + (holding() ? '<span class="tr-dim">Press Continue ▶ under the table when you’re ready.</span>' : '<button class="ghost" data-act="play:continue">Got it</button>') + '</div>') + '</div>' : '';
-    if (g.over && T && T.done) {
+    if (autoOn()) {
+      actions = autoBar();
+    } else if (g.over && T && T.done) {
       actions = (isGuest() ? '<span class="tr-wait">Waiting for the host to start the next game…</span>' : '<button class="primary" data-act="tour:again">🏆 New tournament</button><button class="ghost" data-act="tour:menu">Back to the menu</button>') + extras;
     } else if (g.over) {
-      actions = (isGuest() ? '<span class="tr-wait">Waiting for the host to deal the next hand…</span>' : '<button class="primary" data-act="play:next">Next hand ▶</button>') + extras;
+      actions = (isGuest() ? '<span class="tr-wait">Waiting for the host to deal the next hand…</span>' : '<button class="primary" data-act="play:next">Next hand ▶</button>') + extras + (room ? '' : AUTO_BTN);
     } else if (holding()) {
       actions = '<button class="primary" data-act="play:continue">Continue ▶</button><span class="tr-dim">Read the explanation on the right first — the bots wait for you.</span>';
     } else if (watching()) {
@@ -2055,6 +2185,7 @@ const Trainer = (() => {
         b.push('<span class="tr-custom"><input type="number" id="trTo" min="' + L.minTo + '" max="' + L.maxTo + '" step="0.5" value="' + L.minTo + '" /><button class="raise" data-act="play:raiseTo">' + (g.curBet > 0 ? 'Raise to' : 'Bet') + '</button></span>');
       }
       b.push('<button class="ghost" data-act="play:hint">💡 Hint</button>');
+      if (!room) b.push(AUTO_BTN);
       actions = b.join('');
     }
     const optsRow = '<label><input type="checkbox" data-opt="advise"' + (opts.advise ? ' checked' : '') + ' /> Advise me before I act</label>'
@@ -2065,13 +2196,13 @@ const Trainer = (() => {
       + (room ? '' : '<label title="Each bot move waits for Next move ▶, so you can read the comment beside the player. Untick to let the bots play at normal speed."><input type="checkbox" data-opt="stepBots"' + (opts.stepBots !== false ? ' checked' : '') + ' /> ⏯ Bots wait for Next</label>')
       + (room ? '' : '<label title="When you fold, the hand carries on one move at a time with the bots’ cards face up and each move explained."><input type="checkbox" data-opt="watch"' + (opts.watch !== false ? ' checked' : '') + ' /> 👀 Watch the bots after I fold</label>')
       + (room || T ? '' : '<label title="Like PokerStars Zoom: when you fold, the rest of the hand plays out at once and you’re dealt the next one — many more hands per hour."><input type="checkbox" data-opt="fastFold"' + (opts.fastFold ? ' checked' : '') + ' /> ⚡ Fast-fold</label>');
-    const myTurn = !holding() && !g.over && me >= 0 && g.toAct === me;
+    const myTurn = !holding() && !autoOn() && !g.over && me >= 0 && g.toAct === me;
     const advice = myTurn ? storyHtml() + (opts.advise ? adviceHtml() : '') : '';
     m.innerHTML = roomBar() + tourBar() + ratingsBar() + '<div class="tr-felt-wrap"><div class="tr-felt">' + felt + '</div></div>'
       + '<div class="tr-actions">' + actions + '</div>'
       + '<div class="tr-key">Key: ' + Array.from(new Set(g.players.map((q, j) => posOf(g, j)).filter(Boolean))).map(p => '<b>' + p + '</b> ' + POS_FULL[p] + (p === 'BTN' ? ' (the dealer)' : p === 'UTG' ? ' (first to act)' : '')).join(' · ') + ' · <b>bb</b> big blinds · <b>D</b> dealer button</div>'
       + '<div class="tr-opts">' + optsRow + '<span>Hand #' + g.handNo + (T ? '' : ' · your session ' + (stats.net >= 0 ? '+' : '') + bbs(stats.net)) + '</span></div>';
-    setPanel(watchHtml() + panel + advice);
+    setPanel((autoOn() ? autoHtml() : autoClose) + (autoClose ? '' : watchHtml()) + panel + advice);
     renderSpot();
   }
   function renderSpot() {
@@ -2834,6 +2965,10 @@ const Trainer = (() => {
       if (v === 'continue') { const p = myPending(); if (p) ackId = p.id; if (g && g.over && fastFolding()) return startHand(); renderPlay(); if (!isGuest()) { if (stepBots()) watchPlay(false); else step(); } return; }
       if (v === 'next') { const p = myPending(); if (p) ackId = p.id; if (g && g.tour && g.tour.done) freshTable(); return startHand(); }
       if (v === 'hint') return hint();
+      if (v === 'auto') return autoStart();
+      if (v === 'autostop') return autoStop();
+      if (v === 'autospeed') { opts.autoSpeed = b.dataset.v; saveOpts(); if (auto) auto.speed = opts.autoSpeed; renderPlay(); return; }
+      if (v === 'automins') { opts.autoMins = +b.dataset.v || 0; saveOpts(); if (auto) auto.endAt = opts.autoMins ? auto.t0 + opts.autoMins * 60000 : 0; renderPlay(); return; }
       if (v === 'wnext' || v === 'wall') return watchPlay(v === 'wall');
       if (v === 'ai') return askAI(b);
       if (v === 'copy') { try { navigator.clipboard.writeText(historyText(g, decisions)); toast('Hand history copied', 'green'); } catch (e) {} return; }
@@ -2935,6 +3070,7 @@ const Trainer = (() => {
       if (b.dataset.opt === 'showBots') renderPlay();
       if (b.dataset.opt === 'pause' && !b.checked && g && !g.over) step();     // un-pausing lets the bots carry on
       if (b.dataset.opt === 'advise' || b.dataset.opt === 'pause' || b.dataset.opt === 'detail') renderPlay();
+      if (b.dataset.opt === 'autoCalm') { if (auto) { auto.calm = !!b.checked; if (auto.calm) auto.speed = 'slow'; } renderPlay(); }
       if (b.dataset.opt === 'watch' || b.dataset.opt === 'stepBots') { renderPlay(); step(); }
       if (b.dataset.opt === 'speak') { if (opts.speak) { spokenLast = ''; said = new Set(); autoSpeak(); } else hush(); }
     };
