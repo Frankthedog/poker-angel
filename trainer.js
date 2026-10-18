@@ -1080,6 +1080,8 @@ const Trainer = (() => {
     d.className = 'tr-msg' + (kind ? ' ' + kind : ''); d.innerHTML = plain(html);
     f.insertBefore(d, f.firstChild);
     while (f.children.length > 40) f.removeChild(f.lastChild);
+    if (d.scrollHeight > d.clientHeight + 4) d.classList.add('more');
+    d.addEventListener('click', e => { if (!e.target.closest('button,a,input,select,summary')) d.classList.toggle('open'); });
     return d;
   }
   function tally(G) {
@@ -1487,6 +1489,7 @@ const Trainer = (() => {
     if (!g || !g.over) return;
     if (btn) btn.disabled = true;
     const ph = feed('', '<b>🤖 AI coach</b>Thinking…');
+    if (ph) ph.classList.add('open');
     const head = '<b>🤖 AI coach — hand #' + g.handNo + '</b>';
     try {
       let text;
@@ -2003,7 +2006,9 @@ const Trainer = (() => {
     const opps = g.players.map((q, j) => ({ q, j })).filter(o => o.j !== me && !o.q.folded);
     if (opps.length && !g.over) {
       lines.push('<span class="tr-dim">What the others probably hold, judged from how they’ve played:</span>');
-      opps.forEach(o => {
+      const unread = opps.filter(o => o.q.rangeW >= 0.99 && !(o.q.post || []).length);
+      if (unread.length > 1) lines.push('· ' + unread.map(o => esc(o.q.name) + ' (' + posOf(g, o.j) + ')').join(', ') + ': haven’t shown anything yet — could have any two cards.');
+      (unread.length > 1 ? opps.filter(o => !unread.includes(o)) : opps).forEach(o => {
         const acts = (o.q.post || []).map(a => a.kind).join(', ');
         lines.push('· ' + esc(o.q.name) + ' (' + posOf(g, o.j) + '): ' + (o.q.rangeW >= 0.99 ? 'could have any two cards' : 'likely one of the best ' + r1(o.q.rangeW * 100) + '% of hands') + (acts ? ', then ' + esc(acts.replace(/bet/g, 'bet or raised').replace(/check/g, 'checked').replace(/call/g, 'called')) : '') + '.');
       });
