@@ -2296,7 +2296,8 @@ const Trainer = (() => {
   const TVOICE_KEY = 'pokerangel.tablevoice', TVOICE_MAX_S = 60, TVOICE_MIN_S = 12;
   const VOICE_PARA = 'Evening, everyone. Shuffle up and deal. I’ve got a feeling about tonight — the cards have been kind to me all week, and I’m not about to argue with them. Pass the chips, pour me something warm, and let’s see a flop. If you bet into me, I might just call; if you check, I might just bet. Either way, no hard feelings — it’s only a game, and it’s a good one.';
   let myVoice = null; try { myVoice = JSON.parse(ls(TVOICE_KEY) || 'null'); } catch (e) { myVoice = null; }
-  const CAN_RECORD = typeof navigator !== 'undefined' && navigator.mediaDevices && typeof MediaRecorder !== 'undefined' && !!(window.api && window.api.ttsClone);
+  const CAN_RECORD = typeof navigator !== 'undefined' && !!navigator.mediaDevices && typeof MediaRecorder !== 'undefined' && !(typeof WEB !== 'undefined' && WEB && !(typeof Peer === 'function'));
+  const ON_PHONE = typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
   const rec = { r: null, chunks: [], t0: 0, timer: 0, stream: null };
   const hashOf = str => { let h = 5381; for (let i = 0; i < str.length; i += 97) h = ((h << 5) + h + str.charCodeAt(i)) >>> 0; return h.toString(36) + str.length.toString(36); };
   async function recStart() {
@@ -2324,14 +2325,40 @@ const Trainer = (() => {
   let recPlay = null;
   function recPlayback() { if (!myVoice) return; if (recPlay) { try { recPlay.pause(); } catch (e) {} } recPlay = new Audio('data:' + myVoice.mime + ';base64,' + myVoice.b64); recPlay.play().catch(() => {}); }
   function recDelete() { myVoice = null; try { localStorage.removeItem(TVOICE_KEY); } catch (e) {} renderMain(); }
+  function recSave() {
+    if (!myVoice) return;
+    const ext = /mp4|m4a|aac/i.test(myVoice.mime) ? 'm4a' : /ogg/i.test(myVoice.mime) ? 'ogg' : /wav/i.test(myVoice.mime) ? 'wav' : /mpeg|mp3/i.test(myVoice.mime) ? 'mp3' : 'webm';
+    const a = document.createElement('a'); a.href = 'data:' + myVoice.mime + ';base64,' + myVoice.b64; a.download = 'poker-angel-voice-' + (myName() || 'me').replace(/\W+/g, '_') + '.' + ext;
+    document.body.appendChild(a); a.click(); a.remove();
+    toast(ON_PHONE ? 'Saved — share the file to your PC, then Import it in Poker Angel there' : 'Recording saved', 'green');
+  }
+  function recImport(file) {
+    if (!file) return;
+    let mime = String(file.type || '').toLowerCase();
+    if (!mime || /x-m4a|aac/.test(mime)) mime = /\.(m4a|aac|mp4)$/i.test(file.name) ? 'audio/mp4' : /\.mp3$/i.test(file.name) ? 'audio/mpeg' : /\.wav$/i.test(file.name) ? 'audio/wav' : /\.ogg$/i.test(file.name) ? 'audio/ogg' : /\.webm$/i.test(file.name) ? 'audio/webm' : mime;
+    if (!/^audio\/(webm|ogg|mp4|mpeg|wav|x-wav|flac)/.test(mime)) { toast('That isn’t an audio file the table voice can use (m4a, mp3, wav, ogg or webm)', 'red'); return; }
+    if (file.size > 8 * 1024 * 1024) { toast('That recording is too big — keep it under a minute', 'red'); return; }
+    const fr = new FileReader();
+    fr.onload = () => {
+      const m = String(fr.result).match(/^data:[^;]*;base64,(.+)$/); if (!m) return;
+      const probe = new Audio('data:' + mime + ';base64,' + m[1]);
+      const done = secs => { myVoice = { mime, b64: m[1], hash: hashOf(m[1]), secs: secs || 0, when: Date.now() }; try { ls(TVOICE_KEY, JSON.stringify(myVoice)); } catch (e) {} toast('🎙 Recording imported' + (secs ? ' (' + secs + ' s)' : ''), 'green'); renderMain(); };
+      probe.onloadedmetadata = () => done(isFinite(probe.duration) ? Math.round(probe.duration) : 0);
+      probe.onerror = () => done(0);
+    };
+    fr.readAsDataURL(file);
+  }
   const voicePayload = () => (myVoice && opts.voiceConsent ? { t: 'voice', name: myName(), mime: myVoice.mime, b64: myVoice.b64, hash: myVoice.hash } : null);
   function voiceRecHtml() {
     if (!CAN_RECORD) return '';
     const when = myVoice ? new Date(myVoice.when).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : '';
     return '<div class="tr-q tr-rec"><b>🎙 My table voice</b> — read this paragraph once (about 25 seconds). When you join a friend’s table it goes to the host, whose ElevenLabs account gives your character your own voice for the table talk. '
-      + (HAS_TTS() ? 'As a host, your own recording voices your seat too.' : '') + '<div class="tr-para">' + esc(VOICE_PARA) + '</div>'
+      + (HAS_TTS() ? 'As a host, your own recording voices your seat too. ' : '')
+      + (ON_PHONE ? 'You’re on a phone — a good microphone. Record here, then either join the table from this phone, or Save the recording, share it to your PC and Import it in Poker Angel there.' : 'A phone’s microphone is usually better than a PC’s: open the web version on your phone, record there, Save, share the file to this PC and Import it here.')
+      + '<div class="tr-para">' + esc(VOICE_PARA) + '</div>'
       + '<div class="tr-row">' + (rec.r ? '<button class="fold" data-act="rec:stop">⏹ Stop</button><span class="tr-dim">Recording… <b id="trRecTime">0 s</b></span>'
-        : '<button data-act="rec:start">' + (myVoice ? '🎙 Record again' : '🎙 Record') + '</button>' + (myVoice ? '<button class="ghost" data-act="rec:play">▶ Play back</button><button class="ghost" data-act="rec:delete">Delete</button><span class="tr-dim">Recorded ' + myVoice.secs + ' s on ' + esc(when) + '.</span>' : ''))
+        : '<button data-act="rec:start">' + (myVoice ? '🎙 Record again' : '🎙 Record') + '</button>' + (myVoice ? '<button class="ghost" data-act="rec:play">▶ Play back</button><button class="ghost" data-act="rec:save">⬇ Save</button><button class="ghost" data-act="rec:delete">Delete</button><span class="tr-dim">' + (myVoice.secs ? 'Recorded ' + myVoice.secs + ' s on ' : 'Imported on ') + esc(when) + '.</span>' : '')
+          + '<button class="ghost" data-act="rec:import">📂 Import a recording</button><input type="file" id="trRecFile" accept="audio/*,.m4a,.mp3,.wav,.ogg,.webm" style="display:none" />')
       + '</div><label class="tr-dim"><input type="checkbox" data-opt="voiceConsent"' + (opts.voiceConsent ? ' checked' : '') + ' /> I agree that this recording may be sent to the host of a table I join, and cloned on their ElevenLabs account to voice my character at that table.</label></div>';
   }
 
@@ -2449,7 +2476,7 @@ const Trainer = (() => {
       + '<label title="A low room murmur and the odd riffle of chips"><input type="checkbox" data-opt="roomTone"' + (opts.roomTone ? ' checked' : '') + ' /> 🎧 Room sound</label>'
       + (opts.roomTone ? sel('roomVol', opts.roomVol || 'soft', [['soft', 'soft'], ['normal', 'normal'], ['loud', 'louder']]) : '') + '</span>';
   }
-  const INVITE = code => 'Come and play poker with me on Poker Angel!\nTable code: ' + code + '\n1. Open Poker Angel → 🎓 Trainer.\n2. Before you join, press 🎙 My table voice and read the short paragraph — it gives your character your own voice at the table.\n3. Type ' + code + ' under Play with friends and press Join a table.';
+  const INVITE = code => 'Come and play poker with me on Poker Angel!\nTable code: ' + code + '\n1. Open Poker Angel → 🎓 Trainer (or, on a phone, https://frankthedog.github.io/poker-angel/).\n2. Before you join, press 🎙 My table voice and read the short paragraph — it gives your character your own voice at the table. A phone’s microphone is best.\n3. Type ' + code + ' under Play with friends and press Join a table.';
 
   const VOICE_SAMPLE = 'This is how I’ll read the coaching. You have Ace King suited on the button. The pot is 9 big blinds and it costs 3 to call, so you need to win 1 time in 4. Raise to 10 big blinds.';
   // What the right-hand column says, minus buttons, drop-downs and stat tables.
@@ -3414,7 +3441,7 @@ const Trainer = (() => {
       if (v === 'start' || v === 'again') return startTournament();
       if (v === 'menu') { freshTable(); broadcast(); renderPlay(); }
     },
-    rec: v => { if (v === 'start') recStart(); else if (v === 'stop') recStop(); else if (v === 'play') recPlayback(); else if (v === 'delete') recDelete(); },
+    rec: v => { if (v === 'start') recStart(); else if (v === 'stop') recStop(); else if (v === 'play') recPlayback(); else if (v === 'save') recSave(); else if (v === 'delete') recDelete(); else if (v === 'import') { const f = $('trRecFile'); if (f) { f.onchange = () => { recImport(f.files && f.files[0]); f.value = ''; }; f.click(); } } },
     room: v => {
       const nameIn = $('trName');
       if (nameIn) ls(NAME_KEY, String(nameIn.value || '').trim().slice(0, 16));
