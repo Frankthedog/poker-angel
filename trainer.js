@@ -656,7 +656,9 @@ const Trainer = (() => {
   // game's own random sequence is untouched.
   function soundPlay(g, i) {
     const s = spot(g, i), p = g.players[i], sp = !s.street && shortSpot(g, i);
-    const so = why => (String(why || '').split('\n').find(l => /^So:/.test(l)) || '').replace(/^So:\s*/, '');
+    // the grader talks to the student ("you're ahead"); about a bot it should say "it"
+    const so = why => (String(why || '').split('\n').find(l => /^So:/.test(l)) || '').replace(/^So:\s*/, '')
+      .replace(/\bYou’re\b/g, 'It’s').replace(/\byou’re\b/g, 'it’s').replace(/\bYou\b/g, 'It').replace(/\byou\b/g, 'it').replace(/\bYour\b/g, 'Its').replace(/\byour\b/g, 'its').replace(/\byourself\b/g, 'itself');
     if (sp) { const go = gradeShort(g, i, sp.type === 'shove' ? 'raise' : 'call', p.bet + p.stack); return { kind: go.v === 'good' ? (sp.type === 'shove' ? 'raise' : 'call') : 'fold', so: so(go.why), s }; }
     if (!s.street) { const A = preflopAdvice(s.k, s); return { kind: A.best, so: so(A.why), s }; }
     const E = equityVsRanges(s.cards, s.board, s.opps, 2500, mulberry(7));
