@@ -1272,6 +1272,48 @@ const Trainer = (() => {
     saveStats();
   }
 
+  // ---- for the 🎯 Coach: the same engine on a spot read off another site ------------------------
+  // s is a spot in the trainer's shape (street, pos, k, cards, board, pot, toCall, raises, curBet,
+  // myBet, maxTo, openerPos, heroOpened, facingAllIn, opps), amounts in big blinds. Returns the best
+  // play, a concrete size, and the explanation — the same words the trainer uses.
+  function adviceForSpot(s) {
+    let best, why, E = null;
+    if (!s.street) { const A = preflopAdvice(s.k, s); best = A.best; why = A.why; }
+    else {
+      E = equityVsRanges(s.cards, s.board, s.opps, 2500);
+      const kinds = s.toCall > 0 ? ['raise', 'call', 'fold'] : ['raise', 'check'];
+      const rated = kinds.map(k => ({ k, G: gradePost(s, k, E) }));
+      const b = rated.find(r => r.G.v === 'good') || rated.find(r => r.G.v === 'ok') || rated[0];
+      best = b.k; why = b.G.why;
+    }
+    if (best === 'call' && s.toCall <= 0) best = 'check';
+    const dd = s.street ? draws(s.cards, s.board) : { flush: false, straight: false };
+    const adv = best === 'raise' ? sizeAdvice(s, E == null ? 50 : E, (dd.flush || dd.straight) && s.street < 3) : null;
+    let to = null;
+    if (adv) {
+      const mid = (adv.lo + adv.hi) / 2;
+      to = adv.unit === 'bb' ? (s.pos === 'SB' ? 3 : 2.5) : adv.unit === 'x' ? mid * Math.max(s.curBet, 1) : s.myBet + mid * s.pot;
+      to = Math.min(s.maxTo, Math.max(to, s.curBet + Math.max(1, s.curBet - 0)));   // never below a legal raise
+      to = Math.round(to * 2) / 2;
+    }
+    const doTxt = best === 'raise' ? ((s.street ? (s.toCall > 0 ? 'Raise to ' : 'Bet ') : (s.raises === 0 ? 'Raise to ' : s.raises === 1 ? '3-bet to ' : '4-bet to ')) + (to != null ? bbs(to) : '')).trim()
+      : best === 'call' ? 'Call ' + bbs(r2(s.toCall)) : best.charAt(0).toUpperCase() + best.slice(1);
+    return { best, do: doTxt, to, E, why: why + (adv ? '\nBet size: ' + adv.rec + '. ' + adv.why : '') };
+  }
+  // Grade what the player actually did in that spot (the Coach records it like a trainer decision).
+  function gradeForSpot(s, kind, to, E) {
+    if (kind === 'raise' && !(to > s.curBet)) kind = 'call';
+    if (kind === 'call' && s.toCall === 0) kind = 'check';
+    if (kind === 'check' && s.toCall > 0) kind = 'fold';
+    const EE = s.street ? (E == null ? equityVsRanges(s.cards, s.board, s.opps, 2500) : E) : null;
+    return withSizing(s.street ? gradePost(s, kind, EE) : gradePre(s, kind), s, kind, Math.max(s.curBet, Number(to) || 0), EE);
+  }
+  // A coached decision on another site goes into the same record as a trainer decision (leaks, totals).
+  function recordCoached(rec) {
+    if (!rec || !rec.G) return;
+    tally(rec.G); stats.coach = (stats.coach || 0) + 1; saveStats();
+  }
+
   // ---- 🃏 Play — solo against bots, or a table with friends over the internet --------------------
   // A friends' table: the HOST's Poker Angel runs the game (deals, bots, grading) and sends each
   // player the table as they are allowed to see it; a guest only sends its own actions. Connections
@@ -1386,6 +1428,15 @@ const Trainer = (() => {
   }
   const AUTO_BTN = '<button class="ghost" data-act="play:auto" title="The Angel plays your seat hand after hand — every card face up, every move explained and read aloud. Press Stop to take the seat back.">🎬 Let the Angel play</button>';
   const autoBar = () => '<span class="tr-wait">' + (auto.calm ? '🌙' : '🎬') + ' The Angel is playing — every card face up, every move explained' + (CAN_SPEAK ? ' and read aloud' : '') + (auto.endAt && !auto.done ? ' · ' + minsLeft() + ' min left' : '') + '.</span><button class="ghost" data-act="play:autostop">⏹ Stop — I’ll play</button>';
+  // Start a sleep story (calm voice, slow pace) or a plain Angel run of n minutes — from a launch option.
+  function sleepStory(mins, calm) {
+    if (room) leaveRoom(true);
+    if (auto) autoStop(true);
+    opts.autoMins = Math.max(0, Math.round(Number(mins) || 0)); opts.autoCalm = calm !== false; opts.speak = true; saveOpts();
+    if (!shown) open();
+    setTab('play');
+    autoStart();
+  }
   function autoStart() {
     if (room || auto) return;
     auto = { speed: opts.autoCalm ? 'slow' : (opts.autoSpeed || 'normal'), timer: 0, prevSpeak: opts.speak, t0: Date.now(),
@@ -2796,6 +2847,8 @@ const Trainer = (() => {
         + '<div class="tr-row"><button data-act="play:next">🃏 Play cash hands against the bots</button>' + AUTO_BTN + '</div>'
         + '<div class="tr-q" style="margin-top:4px">🎬 <b>Watch the Angel play</b> — sit back while the Angel plays hand after hand in your seat: every card face up, every move (its own and the bots’) explained beside the player and in the column on the right, with the bet sizes and the strategy behind them' + (CAN_SPEAK ? ', read aloud as it goes' : '') + '. Press Stop whenever you want the seat back.</div>'
         + '<div class="tr-row">' + autoOptsHtml() + '</div>'
+        + '<div class="tr-q tr-sleep" style="margin-top:8px">🌙 <b>Sleep story</b> — the Angel plays a quiet table in a calm, unhurried voice, explaining every hand, and closes softly when the time is up. Lights off, press one:'
+        + '<div class="tr-row">' + [20, 30, 45, 60].map(m => '<button class="ghost" data-act="play:sleep" data-v="' + m + '">🌙 ' + m + ' minutes</button>').join('') + '</div></div>'
         + '<div class="tr-q" style="margin-top:8px"><b>🏆 Tournament</b> — a sit-and-go against the bots: blinds rise, the big blind posts an ante (as at the WSOP), players are knocked out and the top places are paid. Once stacks are short, every shove, fold and call is graded in prize money (ICM) next to the chip-only answer.</div>'
         + tourOptsHtml() + '<div class="tr-row"><button data-act="tour:start">🏆 Start a tournament</button></div>'
         + '<div class="tr-q" style="margin-top:8px"><b>Play with friends</b> — over the internet, everyone graded, everyone learning together. ' + (IN_BROWSER ? 'Friends open this same page — nothing to install.' : 'Each friend needs Poker Angel.') + '</div>'
@@ -3581,7 +3634,7 @@ const Trainer = (() => {
     $('trMain').innerHTML = '<div class="tr-drill">' + dailyHtml() + '<div class="tr-q"><b>Your play</b></div><div class="tr-stats">'
       + tile('Hands played', s.hands) + tile('Result', (s.net >= 0 ? '+' : '') + bbs(s.net)) + tile('Big blinds won per 100 hands', s.hands ? r1(s.net / s.hands * 100) : '—')
       + tile('Hands you chose to play (VPIP)', pc(s.vpip, s.hands)) + tile('Hands you raised before the flop (PFR)', pc(s.pfr, s.hands))
-      + tile('Decisions explained', dec) + tile('Matched the best play (or close)', pc(s.good + s.ok, dec)) + tile('Differed from the best play', s.bad) + tile('Chips those cost (big blinds)', r1(s.loss)) + tile('Hints used', s.hints)
+      + tile('Decisions explained', dec) + tile('Matched the best play (or close)', pc(s.good + s.ok, dec)) + tile('Differed from the best play', s.bad) + tile('Chips those cost (big blinds)', r1(s.loss)) + tile('Hints used', s.hints) + tile('Coached on other sites', s.coach || 0)
       + '</div><div class="tr-dim">VPIP = Voluntarily Put money In the Pot; PFR = Pre-Flop Raise. At a 6-player table, good players play about 22–28% of hands and raise a few points fewer than that. Results over a few hundred hands are mostly luck — the decision grades are the number to watch.</div>'
       + '<div class="tr-q"><b>Where your choices most often differ from the best play</b></div>'
       + (leaks.length ? '<div class="tr-res">' + leaks.map(k => s.leaks[k] + ' × ' + esc(plain(k.replace(/^Best play: /, 'when the best play was ')))).join('\n') + '</div>' : '<div class="tr-dim">None recorded yet.</div>')
@@ -3615,6 +3668,7 @@ const Trainer = (() => {
       if (v === 'next') { const p = myPending(); if (p) ackId = p.id; if (g && g.tour && g.tour.done) freshTable(); return startHand(); }
       if (v === 'hint') return hint();
       if (v === 'auto') return autoStart();
+      if (v === 'sleep') return sleepStory(+b.dataset.v || 30, true);
       if (v === 'autostop') return autoStop();
       if (v === 'autospeed') { opts.autoSpeed = b.dataset.v; saveOpts(); if (auto) auto.speed = opts.autoSpeed; renderPlay(); return; }
       if (v === 'automins') { opts.autoMins = +b.dataset.v || 0; saveOpts(); if (auto) auto.endAt = opts.autoMins ? auto.t0 + opts.autoMins * 60000 : 0; renderPlay(); return; }
@@ -3753,8 +3807,8 @@ const Trainer = (() => {
   // ⚙ Settings changed the voice: pick the new one up (app.js calls this when the dialog closes).
   function voiceChanged() { Promise.all([loadVoiceCfg(), loadLib()]).then(() => { ttsFails = 0; stockVoices = null; chatterSchedule(); if (shown && tab === 'play') renderPlay(); }); }
   return {
-    wire, open, close, voiceChanged, voiceLabel,
-    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech, storyHtml, levelWhy, COACH_LEVELS, primerHtml, HAND_RANKS, rankOf, REMARKS, pickRemark, INVITE, VOICE_PARA, VOICE_PARA2, TALK_LEVELS, TALK_SYSTEM, setLevelForTest: v => { opts.level = v; } },
+    wire, open, close, voiceChanged, voiceLabel, sleepStory,
+    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech, storyHtml, levelWhy, COACH_LEVELS, primerHtml, HAND_RANKS, rankOf, adviceForSpot, gradeForSpot, recordCoached, levelWhyFor: levelWhy, REMARKS, pickRemark, INVITE, VOICE_PARA, VOICE_PARA2, TALK_LEVELS, TALK_SYSTEM, setLevelForTest: v => { opts.level = v; } },
   };
 })();
 
