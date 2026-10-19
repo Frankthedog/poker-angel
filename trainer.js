@@ -2376,7 +2376,7 @@ const Trainer = (() => {
       try { await window.api.voicesSave({ name: myName(), mime: myVoice.mime, b64: myVoice.b64, secs: myVoice.secs, hash: myVoice.hash }); voiceLib = await window.api.voicesList(); opts.myVoiceName = myName(); saveOpts(); localStorage.removeItem(TVOICE_KEY); myVoice = null; } catch (e) {}
     }
   }
-  const CAN_RECORD = typeof navigator !== 'undefined' && !!navigator.mediaDevices && typeof MediaRecorder !== 'undefined' && !(typeof WEB !== 'undefined' && WEB && !(typeof Peer === 'function'));
+  const CAN_RECORD = typeof navigator !== 'undefined' && !!navigator.mediaDevices && typeof window !== 'undefined' && !!(window.AudioContext || window.webkitAudioContext) && !(typeof WEB !== 'undefined' && WEB && !(typeof Peer === 'function'));
   const ON_PHONE = typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
   const rec = { r: null, chunks: [], t0: 0, timer: 0, stream: null };
   const hashOf = str => { let h = 5381; for (let i = 0; i < str.length; i += 97) h = ((h << 5) + h + str.charCodeAt(i)) >>> 0; return h.toString(36) + str.length.toString(36); };
@@ -2392,43 +2392,58 @@ const Trainer = (() => {
     } catch (e) { toast('Couldn’t save the recording: ' + cleanErr(e), 'red'); }
     renderMain();
   }
+  // The recorder captures raw audio through Web Audio and writes a WAV itself. Phones' built-in
+  // recorders (MediaRecorder) are unreliable — iPhones often hand back nothing — and a WAV is what the
+  // voice engine wants anyway. 22.05 kHz mono, 16-bit: a 25-second take is about 1.1 MB.
+  const REC_RATE = 22050;
   async function recStart(forName, append) {
     if (rec.r) return;
     const name = forName || recName(); rec.append = !!append;
+    let ctx = null;
     try {
-      rec.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-      const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'].find(m => MediaRecorder.isTypeSupported(m)) || '';
-      let r = null;
-      try { r = new MediaRecorder(rec.stream, mime ? { mimeType: mime, audioBitsPerSecond: 64000 } : undefined); } catch (e1) { try { r = new MediaRecorder(rec.stream, mime ? { mimeType: mime } : undefined); } catch (e2) { r = new MediaRecorder(rec.stream); } }   // some phones reject the bitrate or the type: fall back
-      rec.r = r; rec.chunks = []; rec.t0 = Date.now(); rec.name = name; rec.done = false;
-      rec.r.ondataavailable = e => { if (e.data && e.data.size) rec.chunks.push(e.data); };
-      rec.r.onstop = () => finish();
-      rec.r.onerror = e => { toast('Recording error: ' + (e && e.error && e.error.message || 'unknown'), 'red'); finish(); };
-      // Finish from whatever has been collected — called by the recorder's stop signal, or by Stop itself if that signal never comes.
-      const finish = () => {
-        if (rec.done) return; rec.done = true;
-        const secs = Math.round((Date.now() - rec.t0) / 1000), blob = new Blob(rec.chunks, { type: (rec.r && rec.r.mimeType) || mime || 'audio/webm' });
-        if (!blob.size) { try { rec.stream && rec.stream.getTracks().forEach(t => t.stop()); } catch (e) {} rec.r = null; rec.stream = null; clearInterval(rec.timer); const why = 'The phone gave back no audio after ' + secs + ' s. Try once more; if it happens again, open the page in Chrome (Android) or make sure Safari is up to date (iPhone), and allow the microphone when asked.'; toast(why, 'red'); if (sendTo) { sendTo.status = '❌ ' + why; } renderMain(); return; }
-        try { rec.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
-        rec.r = null; rec.stream = null; clearInterval(rec.timer);
-        if (sendTo) { sendTo.status = 'Recorded ' + secs + ' s (' + (blob.type || 'audio') + ', ' + Math.round(blob.size / 1024) + ' KB).'; }
-        if (secs < TVOICE_MIN_S) { toast('That was only ' + secs + ' seconds — read the whole paragraph (about 20–30 seconds)', 'red'); if (sendTo) sendTo.status += ' Too short — read the whole paragraph.'; renderMain(); return; }
-        const fr = new FileReader();
-        fr.onload = () => { const m = String(fr.result).match(/^data:([^;]+);base64,(.+)$/); if (m) keepVoice({ mime: m[1], b64: m[2], hash: hashOf(m[2]), secs, when: Date.now() }, rec.name, rec.append); };
-        fr.readAsDataURL(blob);
-      };
-      rec.finish = finish;
-      const safari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent) || /iPhone|iPad|iPod/i.test(navigator.userAgent);
-      try { if (safari) rec.r.start(); else rec.r.start(250); } catch (e) { rec.r.start(); }   // Safari hands the audio over only at the end; slices can leave it stuck
-      rec.timer = setInterval(() => { const el = $('trRecTime'); if (el) el.textContent = Math.round((Date.now() - rec.t0) / 1000) + ' s'; if (Date.now() - rec.t0 > TVOICE_MAX_S * 1000) recStop(); }, 250);
+      ctx = new (window.AudioContext || window.webkitAudioContext)();             // made inside the tap, which iPhones require
+      try { await ctx.resume(); } catch (e) {}
+      rec.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      const src = ctx.createMediaStreamSource(rec.stream), proc = ctx.createScriptProcessor(4096, 1, 1), mute = ctx.createGain();
+      mute.gain.value = 0;
+      rec.pcm = []; rec.rate = ctx.sampleRate; rec.t0 = Date.now(); rec.name = name; rec.done = false; rec.peak = 0;
+      proc.onaudioprocess = e => { if (!rec.pcm) return; const d = e.inputBuffer.getChannelData(0); rec.pcm.push(new Float32Array(d)); for (let i = 0; i < d.length; i += 64) { const v = Math.abs(d[i]); if (v > rec.peak) rec.peak = v; } };
+      src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+      rec.r = { ctx, src, proc, mute, state: 'recording' };
+      rec.timer = setInterval(() => { const el = $('trRecTime'); if (el) el.textContent = Math.round((Date.now() - rec.t0) / 1000) + ' s' + (rec.peak < 0.01 && Date.now() - rec.t0 > 3000 ? ' — no sound is reaching the microphone' : ''); if (Date.now() - rec.t0 > TVOICE_MAX_S * 1000) recStop(); }, 250);
       renderMain();
-    } catch (e) { toast('Couldn’t use the microphone: ' + cleanErr(e), 'red'); }
+    } catch (e) {
+      try { if (ctx) ctx.close(); } catch (x) {}
+      const why = (e && e.name === 'NotAllowedError') ? 'The microphone was not allowed. Allow it for this site in the browser’s settings and try again.' : 'Couldn’t use the microphone: ' + cleanErr(e);
+      toast(why, 'red'); if (sendTo) { sendTo.status = '❌ ' + why; renderMain(); }
+    }
   }
   function recStop() {
-    if (!rec.r) return;
-    const el = $('trRecTime'); if (el) el.textContent = 'stopping…';
-    try { if (rec.r.state !== 'inactive') { try { rec.r.requestData(); } catch (e) {} rec.r.stop(); } } catch (e) {}
-    setTimeout(() => { if (rec.finish && !rec.done) { try { if (rec.r && rec.r.state !== 'inactive') rec.r.requestData(); } catch (e) {} setTimeout(() => { if (rec.finish && !rec.done) rec.finish(); }, 800); } }, 2500);   // the phone never said "stopped": ask once more, then finish anyway
+    const r = rec.r; if (!r || rec.done) return;
+    rec.done = true; clearInterval(rec.timer);
+    const el = $('trRecTime'); if (el) el.textContent = 'finishing…';
+    try { r.src.disconnect(); r.proc.disconnect(); r.mute.disconnect(); } catch (e) {}
+    try { rec.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+    try { r.ctx.close(); } catch (e) {}
+    const chunks = rec.pcm || [], rate = rec.rate || 48000, secs = Math.round((Date.now() - rec.t0) / 1000);
+    rec.r = null; rec.stream = null; rec.pcm = null;
+    let n = 0; for (const c of chunks) n += c.length;
+    if (!n || rec.peak < 0.005) {
+      const why = !n ? 'The phone gave back no audio. Try once more; allow the microphone if asked.' : 'The recording was silent — the microphone picked up nothing. Check the phone isn’t muted and try again.';
+      toast(why, 'red'); if (sendTo) sendTo.status = '❌ ' + why; renderMain(); return;
+    }
+    if (secs < TVOICE_MIN_S) { toast('That was only ' + secs + ' seconds — read the whole paragraph (about 20–30 seconds)', 'red'); if (sendTo) sendTo.status = 'Recorded ' + secs + ' s — too short, read the whole paragraph.'; renderMain(); return; }
+    // join, downsample to 22.05 kHz, write a 16-bit WAV
+    const all = new Float32Array(n); let o = 0; for (const c of chunks) { all.set(c, o); o += c.length; }
+    const ratio = rate / REC_RATE, outN = Math.floor(n / ratio), out = new Int16Array(outN);
+    for (let i = 0; i < outN; i++) { const p0 = i * ratio, i0 = Math.floor(p0), f = p0 - i0, v = all[i0] * (1 - f) + (all[Math.min(n - 1, i0 + 1)] || 0) * f; out[i] = Math.max(-32768, Math.min(32767, Math.round(v * 32767))); }
+    const buf = new ArrayBuffer(44 + outN * 2), v = new DataView(buf), W = (off, str) => { for (let i = 0; i < str.length; i++) v.setUint8(off + i, str.charCodeAt(i)); };
+    W(0, 'RIFF'); v.setUint32(4, 36 + outN * 2, true); W(8, 'WAVE'); W(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, REC_RATE, true); v.setUint32(28, REC_RATE * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); W(36, 'data'); v.setUint32(40, outN * 2, true);
+    new Int16Array(buf, 44).set(out);
+    const bytes = new Uint8Array(buf); let bin = ''; for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    const b64 = btoa(bin);
+    if (sendTo) sendTo.status = 'Recorded ' + secs + ' s (wav, ' + Math.round(bytes.length / 1024) + ' KB). Choose what it’s for and send.';
+    keepVoice({ mime: 'audio/wav', b64, hash: hashOf(b64), secs, when: Date.now() }, rec.name, rec.append);
   }
   let recPlay = null;
   const playB64 = (mime, b64) => { if (recPlay) { try { recPlay.pause(); } catch (e) {} } recPlay = new Audio('data:' + mime + ';base64,' + b64); recPlay.play().catch(() => {}); };
