@@ -2404,7 +2404,8 @@ const Trainer = (() => {
         const secs = Math.round((Date.now() - rec.t0) / 1000), blob = new Blob(rec.chunks, { type: rec.r.mimeType || mime || 'audio/webm' });
         try { rec.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
         rec.r = null; rec.stream = null; clearInterval(rec.timer);
-        if (secs < TVOICE_MIN_S) { toast('That was only ' + secs + ' seconds — read the whole paragraph (about 20–30 seconds)', 'red'); renderMain(); return; }
+        if (sendTo) { sendTo.status = 'Recorded ' + secs + ' s (' + (blob.type || 'audio') + ', ' + Math.round(blob.size / 1024) + ' KB).'; }
+        if (secs < TVOICE_MIN_S) { toast('That was only ' + secs + ' seconds — read the whole paragraph (about 20–30 seconds)', 'red'); if (sendTo) sendTo.status += ' Too short — read the whole paragraph.'; renderMain(); return; }
         const fr = new FileReader();
         fr.onload = () => { const m = String(fr.result).match(/^data:([^;]+);base64,(.+)$/); if (m) keepVoice({ mime: m[1], b64: m[2], hash: hashOf(m[2]), secs, when: Date.now() }, rec.name, rec.append); };
         fr.readAsDataURL(blob);
@@ -2414,7 +2415,7 @@ const Trainer = (() => {
       renderMain();
     } catch (e) { toast('Couldn’t use the microphone: ' + cleanErr(e), 'red'); }
   }
-  function recStop() { if (rec.r && rec.r.state !== 'inactive') rec.r.stop(); }
+  function recStop() { if (rec.r && rec.r.state !== 'inactive') { try { rec.r.requestData(); } catch (e) {} rec.r.stop(); const el = $('trRecTime'); if (el) el.textContent = 'stopping…'; } }
   let recPlay = null;
   const playB64 = (mime, b64) => { if (recPlay) { try { recPlay.pause(); } catch (e) {} } recPlay = new Audio('data:' + mime + ';base64,' + b64); recPlay.play().catch(() => {}); };
   async function voiceData(name) {                                            // { mime, b64, hash, secs } for a library entry, or the browser's one
@@ -2509,7 +2510,7 @@ const Trainer = (() => {
     renderMain();
   }
   // Once a minute: if the listener has died, bring it back.
-  setInterval(() => { try { if (!HAS_LIB || typeof Peer !== 'function') return; if (!inbox) return inboxOpen(); if (inbox.peer.destroyed) { inbox = null; inboxOpen(); } else if (inbox.peer.disconnected) inbox.peer.reconnect(); } catch (e) {} }, 60000);
+  setInterval(() => { try { if (!HAS_LIB || typeof Peer !== 'function') return; if (!inbox) return inboxOpen(); if (inbox.peer.destroyed) { inbox = null; inboxOpen(); } else if (inbox.peer.disconnected) { inbox.status = 'Reconnecting…'; inbox.peer.reconnect(); } else if (inbox.status && inbox.peer.open) { inbox.status = ''; renderMain(); } } catch (e) {} }, 15000);
   function inboxClose(quiet) { if (!inbox) return; try { inbox.peer.destroy(); } catch (e) {} inbox = null; if (!quiet) renderMain(); }
   function inboxHtml() {
     if (!HAS_LIB || typeof Peer !== 'function') return '';
@@ -2533,9 +2534,11 @@ const Trainer = (() => {
       conn.on('open', () => { clearTimeout(giveUp); if (sendTo && sendTo.peer === peer) { sendTo.conn = conn; sendTo.status = ''; renderMain(); } });
       conn.on('data', m => { if (!m || !sendTo) return;
         if (m.t === 'welcome') { sendTo.bots = m.bots || []; sendTo.voices = m.voices || []; sendTo.status = ''; renderMain(); return; }
-        if (m.t === 'ok') { sendTo.status = '✅ ' + m.name + ' is on the PC' + (m.cloned ? ' and ready' : '') + (m.what ? ' — ' + m.what : '') + '. Record the next one, or you’re done.'; if (!sendTo.voices.includes(m.name)) sendTo.voices.push(m.name); myVoice = null; try { localStorage.removeItem(TVOICE_KEY); } catch (e) {} }
+        if (m.t === 'ok') { clearTimeout(sendTo.ackTimer); sendTo.sentAt = 0; sendTo.status = '✅ ' + m.name + ' is on the PC' + (m.cloned ? ' and ready' : '') + (m.what ? ' — ' + m.what : '') + '. Record the next one, or you’re done.'; if (!sendTo.voices.includes(m.name)) sendTo.voices.push(m.name); myVoice = null; try { localStorage.removeItem(TVOICE_KEY); } catch (e) {} }
         else if (m.t === 'fail') sendTo.status = '❌ ' + m.error; renderMain(); });
-      conn.on('close', () => { if (sendTo && sendTo.peer === peer) { sendTo.status = 'The PC closed the connection.'; sendTo.conn = null; renderMain(); } });
+      conn.on('close', () => { if (sendTo && sendTo.peer === peer) { sendTo.status = 'The connection to the PC closed — tap Connect again.'; sendTo.conn = null; renderMain(); } });
+      conn.on('error', e => { if (sendTo && sendTo.peer === peer) { sendTo.status = '❌ Connection error: ' + (e && (e.message || e.type) || e); renderMain(); } });
+      conn.on('iceStateChanged', st => { if (sendTo && sendTo.peer === peer && /failed|disconnected/.test(String(st))) { sendTo.status = '❌ The link to the PC ' + st + ' — same Wi‑Fi as the PC, then Connect again.'; renderMain(); } });
     });
     peer.on('error', e => { clearTimeout(giveUp); if (sendTo && sendTo.peer === peer) { sendTo.status = e && e.type === 'peer-unavailable' ? 'No PC is listening under ' + code + ' — press 📲 Receive voices on the PC first.' : 'Couldn’t connect: ' + (e && (e.type || e.message)); renderMain(); } });
   }
@@ -2543,7 +2546,8 @@ const Trainer = (() => {
     if (!sendTo || !sendTo.conn || !sendTo.conn.open) { toast('Connect to the PC first', 'red'); return; }
     if (!myVoice) { toast('Record a voice first', 'red'); return; }
     const name = recName(), useEl = $('trVoiceUse'), use = useEl ? useEl.value : 'coach';
-    try { sendTo.conn.send({ t: 'voicefile', name, mime: myVoice.mime, b64: myVoice.b64, secs: myVoice.secs, hash: myVoice.hash, use }); sendTo.status = 'Sending ' + name + '…'; renderMain(); }
+    try { sendTo.conn.send({ t: 'voicefile', name, mime: myVoice.mime, b64: myVoice.b64, secs: myVoice.secs, hash: myVoice.hash, use }); sendTo.status = 'Sending ' + name + ' (' + Math.round(myVoice.b64.length * 0.75 / 1024) + ' KB)…'; sendTo.sentAt = Date.now(); renderMain();
+      clearTimeout(sendTo.ackTimer); sendTo.ackTimer = setTimeout(() => { if (sendTo && sendTo.sentAt && /^Sending/.test(sendTo.status || '')) { sendTo.status = '❌ The PC didn’t confirm within 90 seconds. Make sure the phone and the PC are on the same Wi‑Fi, tap Connect again, and send again.'; renderMain(); } }, 90000); }
     catch (e) { toast('Couldn’t send: ' + cleanErr(e), 'red'); }
   }
   function useSel(bots) {
