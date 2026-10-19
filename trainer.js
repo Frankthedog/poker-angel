@@ -1378,6 +1378,7 @@ const Trainer = (() => {
     onHandState();
     broadcast();
     step();
+    showTable();
   }
   // One bot action, with its reason kept for watching (g.watchLog).
   function botMove() {
@@ -1535,6 +1536,11 @@ const Trainer = (() => {
       + '<div class="tr-nosay">' + storyHtml(g, me, true) + '</div>';
   }
 
+  // On a phone the page scrolls as a whole, and the Play menu is long — so when a hand is dealt the
+  // table might sit below where the player was looking. Bring it into view.
+  function showTable() {
+    try { if (window.innerWidth < 760) { const el = document.querySelector('.tr-felt-wrap'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } } catch (e) {}
+  }
   // Bots act on the host (or solo). A person's turn waits for them.
   function step() {
     if (tab === 'play') renderPlay(); else renderSpot();
@@ -2028,9 +2034,11 @@ const Trainer = (() => {
     if (m.t !== 'state') return;
     Object.assign(room, { faceUp: !!m.faceUp, players: m.players || [] });
     me = typeof m.seat === 'number' ? m.seat : -1;
+    const fresh = g && m.g && m.g.handNo !== g.handNo;
     g = m.g || null; decisions = m.decisions || [];
     if (g) onHandState();
     if (tab === 'play' && shown) renderPlay(); else renderSpot();
+    if (fresh) showTable();
   }
   function leaveRoom(quiet) {
     if (!room) return;
