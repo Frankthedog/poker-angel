@@ -2312,6 +2312,7 @@ const Trainer = (() => {
     } catch (e) { console.error('speech', e); }
   }
   let ttsAudio = null, ttsBusy = false, ttsGen = 0, ttsFails = 0;
+  const blobUrl = (mime, b64) => { const bin = atob(b64), u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); return URL.createObjectURL(new Blob([u8], { type: mime })); };
   function ttsStop() { ttsGen++; ttsBusy = false; if (ttsAudio) { try { ttsAudio.pause(); } catch (e) {} ttsAudio = null; } }
   async function ttsSay(parts) {
     const gen = ++ttsGen; ttsBusy = true;
@@ -2323,7 +2324,7 @@ const Trainer = (() => {
         const r = await next; if (gen !== ttsGen) return;
         next = k + 1 < parts.length ? window.api.ttsSpeak({ text: parts[k + 1], speed, calm }) : null;
         if (!r) continue;
-        await new Promise(res => { const a = new Audio('data:' + r.mime + ';base64,' + r.b64); ttsAudio = a; a.onended = res; a.onerror = res; a.play().catch(res); });
+        await new Promise(res => { const url = blobUrl(r.mime, r.b64), a = new Audio(url); ttsAudio = a; const done = () => { URL.revokeObjectURL(url); res(); }; a.onended = done; a.onerror = e => { console.error('voice clip', e); done(); }; a.play().catch(e => { console.error('voice play', e); done(); }); });
         if (gen !== ttsGen) return;
       }
       ttsFails = 0;
@@ -2339,7 +2340,7 @@ const Trainer = (() => {
     const t = forSpeech(text); if (!t) return;
     ttsStop(); if (CAN_SPEAK) try { speechSynthesis.cancel(); } catch (e) {}
     if (chatterGain) { try { chatterGain.gain.setTargetAtTime(0.35, actx.currentTime, 0.1); chatterGain.gain.setTargetAtTime(1, actx.currentTime + 2.5, 1.5); } catch (e) {} }
-    if (HAS_TTS() && ttsFails < 3) ttsSay(passages(t, 500)); else speakLocal(passages(t, 220));
+    if (HAS_TTS() && ttsFails < 3) ttsSay(passages(t, voiceCfg.engine === 'own' ? 170 : 500)); else speakLocal(passages(t, 220));   // the own engine: a sentence or two at a time, so the first words come quickly while the rest is made
   }
   function hush() { ttsStop(); if (CAN_SPEAK) try { speechSynthesis.cancel(); } catch (e) {} }
   const voiceBusy = () => ttsBusy || (CAN_SPEAK && speechSynthesis.speaking);
@@ -2446,7 +2447,7 @@ const Trainer = (() => {
     keepVoice({ mime: 'audio/wav', b64, hash: hashOf(b64), secs, when: Date.now() }, rec.name, rec.append);
   }
   let recPlay = null;
-  const playB64 = (mime, b64) => { if (recPlay) { try { recPlay.pause(); } catch (e) {} } recPlay = new Audio('data:' + mime + ';base64,' + b64); recPlay.play().catch(() => {}); };
+  const playB64 = (mime, b64) => { if (recPlay) { try { recPlay.pause(); } catch (e) {} } recPlay = new Audio(blobUrl(mime, b64)); recPlay.play().catch(() => {}); };
   async function voiceData(name) {                                            // { mime, b64, hash, secs } for a library entry, or the browser's one
     if (!HAS_LIB) return myVoice;
     try { return await window.api.voicesGet({ name }); } catch (e) { return null; }
