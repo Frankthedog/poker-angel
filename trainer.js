@@ -2398,10 +2398,16 @@ const Trainer = (() => {
     try {
       rec.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
       const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'].find(m => MediaRecorder.isTypeSupported(m)) || '';
-      rec.r = new MediaRecorder(rec.stream, mime ? { mimeType: mime, audioBitsPerSecond: 64000 } : undefined); rec.chunks = []; rec.t0 = Date.now(); rec.name = name;
+      let r = null;
+      try { r = new MediaRecorder(rec.stream, mime ? { mimeType: mime, audioBitsPerSecond: 64000 } : undefined); } catch (e1) { try { r = new MediaRecorder(rec.stream, mime ? { mimeType: mime } : undefined); } catch (e2) { r = new MediaRecorder(rec.stream); } }   // some phones reject the bitrate or the type: fall back
+      rec.r = r; rec.chunks = []; rec.t0 = Date.now(); rec.name = name; rec.done = false;
       rec.r.ondataavailable = e => { if (e.data && e.data.size) rec.chunks.push(e.data); };
-      rec.r.onstop = () => {
-        const secs = Math.round((Date.now() - rec.t0) / 1000), blob = new Blob(rec.chunks, { type: rec.r.mimeType || mime || 'audio/webm' });
+      rec.r.onstop = () => finish();
+      rec.r.onerror = e => { toast('Recording error: ' + (e && e.error && e.error.message || 'unknown'), 'red'); finish(); };
+      // Finish from whatever has been collected — called by the recorder's stop signal, or by Stop itself if that signal never comes.
+      const finish = () => {
+        if (rec.done) return; rec.done = true;
+        const secs = Math.round((Date.now() - rec.t0) / 1000), blob = new Blob(rec.chunks, { type: (rec.r && rec.r.mimeType) || mime || 'audio/webm' });
         try { rec.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
         rec.r = null; rec.stream = null; clearInterval(rec.timer);
         if (sendTo) { sendTo.status = 'Recorded ' + secs + ' s (' + (blob.type || 'audio') + ', ' + Math.round(blob.size / 1024) + ' KB).'; }
@@ -2410,12 +2416,18 @@ const Trainer = (() => {
         fr.onload = () => { const m = String(fr.result).match(/^data:([^;]+);base64,(.+)$/); if (m) keepVoice({ mime: m[1], b64: m[2], hash: hashOf(m[2]), secs, when: Date.now() }, rec.name, rec.append); };
         fr.readAsDataURL(blob);
       };
-      rec.r.start(250);
+      rec.finish = finish;
+      try { rec.r.start(250); } catch (e) { rec.r.start(); }
       rec.timer = setInterval(() => { const el = $('trRecTime'); if (el) el.textContent = Math.round((Date.now() - rec.t0) / 1000) + ' s'; if (Date.now() - rec.t0 > TVOICE_MAX_S * 1000) recStop(); }, 250);
       renderMain();
     } catch (e) { toast('Couldn’t use the microphone: ' + cleanErr(e), 'red'); }
   }
-  function recStop() { if (rec.r && rec.r.state !== 'inactive') { try { rec.r.requestData(); } catch (e) {} rec.r.stop(); const el = $('trRecTime'); if (el) el.textContent = 'stopping…'; } }
+  function recStop() {
+    if (!rec.r) return;
+    const el = $('trRecTime'); if (el) el.textContent = 'stopping…';
+    try { if (rec.r.state !== 'inactive') { try { rec.r.requestData(); } catch (e) {} rec.r.stop(); } } catch (e) {}
+    setTimeout(() => { if (rec.finish && !rec.done) rec.finish(); }, 1500);           // the phone never said "stopped": finish anyway
+  }
   let recPlay = null;
   const playB64 = (mime, b64) => { if (recPlay) { try { recPlay.pause(); } catch (e) {} } recPlay = new Audio('data:' + mime + ';base64,' + b64); recPlay.play().catch(() => {}); };
   async function voiceData(name) {                                            // { mime, b64, hash, secs } for a library entry, or the browser's one
