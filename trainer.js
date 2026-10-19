@@ -2457,47 +2457,69 @@ const Trainer = (() => {
   // library (and clones it) — as many as you like, one after another. Direct phone-to-PC; the PeerJS
   // server only introduces them.
   let inbox = null;                // PC: { code, peer, got: [] }
-  let sendTo = null;               // phone: { code, peer, conn, status }
+  let sendTo = null;               // phone: { code, peer, conn, status, bots }
+  // The PC's phone code is permanent (kept in the options), so the phone can send a voice any time
+  // Poker Angel is open — no need to press anything here first.
+  const phoneCode = () => { if (!opts.phoneCode) { opts.phoneCode = newCode(); saveOpts(); } return opts.phoneCode; };
+  async function applyVoiceUse(name, use) {
+    if (!use) return '';
+    if (use === 'coach') { const id = libVoiceId(name); if (!id) return 'saved — it will be the coach’s voice once it is ready'; await window.api.setTts({ voice: id, voiceName: name }); voiceChanged(); return 'now the coach’s voice'; }
+    if (use === 'mine') { opts.myVoiceName = name; saveOpts(); return 'now your table voice'; }
+    if (/^bot:/.test(use)) { const bot = use.slice(4); opts.voiceAssign = opts.voiceAssign || {}; opts.voiceAssign[bot] = name; saveOpts(); return 'now ' + bot + '’s voice'; }
+    return '';
+  }
   function inboxOpen() {
-    if (!HAS_LIB || inbox || typeof Peer !== 'function') { if (typeof Peer !== 'function') toast('The connection library didn’t load', 'red'); return; }
-    const code = newCode(), peer = new Peer(PEER_PREFIX + 'v-' + code.toLowerCase());
+    if (!HAS_LIB || inbox || typeof Peer !== 'function') return;
+    const code = phoneCode(), peer = new Peer(PEER_PREFIX + 'v-' + code.toLowerCase());
     inbox = { code, peer, got: [], status: 'Opening…' };
     peer.on('open', () => { if (inbox && inbox.peer === peer) { inbox.status = ''; renderMain(); } });
     peer.on('connection', conn => {
+      conn.on('open', () => { try { conn.send({ t: 'welcome', bots: BOTS.slice(), voices: voiceLib.map(v => v.name), engine: voiceCfg.engine }); } catch (e) {} });
       conn.on('data', async m => {
-        if (!m || m.t !== 'voicefile' || typeof m.b64 !== 'string' || m.b64.length > 12e6) return;
+        if (!m || typeof m !== 'object') return;
+        if (m.t === 'use') {                                      // a voice already on the PC, given a job from the phone
+          const name = String(m.name || '').slice(0, 16); if (!voiceLib.some(v => v.name === name)) return;
+          const what = await applyVoiceUse(name, String(m.use || '')); try { conn.send({ t: 'ok', name, cloned: true, what }); } catch (e) {} renderMain(); return;
+        }
+        if (m.t !== 'voicefile' || typeof m.b64 !== 'string' || m.b64.length > 12e6) return;
         const name = String(m.name || '').replace(/[^\w .'-]/g, '').trim().slice(0, 16) || 'Voice';
         try {
           const r = await window.api.voicesSave({ name, mime: String(m.mime || ''), b64: m.b64, secs: Number(m.secs) || 0, hash: String(m.hash || ''), append: !!m.append });
           await loadLib(); if (inbox) inbox.got.push(name);
-          try { conn.send({ t: 'ok', name, cloned: !!r.voiceId, error: r.cloneError || '' }); } catch (e) {}
-          toast('📲 ' + name + ' received from the phone' + (r.voiceId ? ' and ready to use' : ''), 'green'); renderMain();
+          const what = await applyVoiceUse(name, String(m.use || ''));
+          try { conn.send({ t: 'ok', name, cloned: !!r.voiceId, error: r.cloneError || '', what }); } catch (e) {}
+          toast('📲 ' + name + ' received from the phone' + (r.voiceId ? ' and ready' : '') + (what ? ' — ' + what : ''), 'green'); renderMain();
         } catch (e) { try { conn.send({ t: 'fail', error: cleanErr(e) }); } catch (x) {} toast('📲 ' + name + ': ' + cleanErr(e), 'red'); }
       });
     });
-    peer.on('error', e => { if (!inbox || inbox.peer !== peer) return; if (e && e.type === 'unavailable-id') { inboxClose(true); inboxOpen(); return; } inbox.status = 'Connection trouble: ' + (e && (e.type || e.message)); renderMain(); });
+    peer.on('error', e => { if (!inbox || inbox.peer !== peer) return; if (e && e.type === 'unavailable-id') { opts.phoneCode = ''; inboxClose(true); inboxOpen(); return; } if (/network|server|socket|disconnected/i.test(e.type || '')) { inbox.status = 'Reconnecting…'; try { peer.reconnect(); } catch (x) {} renderMain(); return; } inbox.status = 'Connection trouble: ' + (e && (e.type || e.message)); renderMain(); });
     renderMain();
   }
   function inboxClose(quiet) { if (!inbox) return; try { inbox.peer.destroy(); } catch (e) {} inbox = null; if (!quiet) renderMain(); }
   function inboxHtml() {
     if (!HAS_LIB || typeof Peer !== 'function') return '';
-    if (!inbox) return '<div class="tr-row"><button class="ghost" data-act="rec:inbox">📲 Receive voices from a phone</button><span class="tr-dim">Use the phone’s microphone: record each person on the phone and send straight to this PC.</span></div>';
-    return '<div class="tr-inbox"><b>📲 Ready for the phone</b>' + (inbox.status ? '<div class="tr-dim">' + esc(inbox.status) + '</div>' : '<div>On the phone, open <b>' + esc(PUBLIC_URL) + '</b>, go to 🎙 Voices → <b>Send to a PC</b>, and enter the code <b class="tr-code">' + esc(inbox.code) + '</b>. Record each voice there; it arrives here' + (HAS_TTS() ? ' and is cloned' : '') + ' straight away.</div>')
-      + (inbox.got.length ? '<div class="tr-dim">Received: ' + esc(inbox.got.join(', ')) + '</div>' : '') + '<div class="tr-row"><button class="ghost tr-mini" data-act="rec:inboxclose">Done</button></div></div>';
+    if (!inbox) return '<div class="tr-inbox"><b>📲 Your phone code: <span class="tr-code">' + esc(phoneCode()) + '</span></b> <span class="tr-dim">Opening…</span> <button class="ghost tr-mini" data-act="rec:inbox">Retry</button></div>';
+    return '<div class="tr-inbox"><b>📲 Your phone code: <span class="tr-code">' + esc(inbox.code) + '</span></b>' + (inbox.status ? ' <span class="tr-dim">' + esc(inbox.status) + '</span>' : '')
+      + '<div class="tr-dim">Everything can be done from the phone: open <b>' + esc(PUBLIC_URL) + '</b> → 🎙 Voices → Send to a PC, enter this code once, then record each voice, say what it’s for (the coach, your seat, a character) and send. It arrives here' + (HAS_TTS() ? ' and is ready' : '') + ' straight away. The code stays the same.</div>'
+      + (inbox.got.length ? '<div class="tr-dim">Received: ' + esc(inbox.got.join(', ')) + '</div>' : '') + '</div>';
   }
   // the phone side
+  const PCCODE_KEY = 'pokerangel.pccode';
   function sendConnect(code) {
     code = String(code || '').trim().toUpperCase();
     if (!/^[A-Z2-9]{5}$/.test(code)) { toast('Enter the 5-letter code shown on the PC', 'red'); return; }
     if (typeof Peer !== 'function') { toast('The connection library didn’t load', 'red'); return; }
     if (sendTo) { try { sendTo.peer.destroy(); } catch (e) {} }
     const peer = new Peer();
-    sendTo = { code, peer, conn: null, status: 'Connecting to PC ' + code + '…' }; renderMain();
+    sendTo = { code, peer, conn: null, status: 'Connecting to PC ' + code + '…', bots: [], voices: [] }; try { ls(PCCODE_KEY, code); } catch (e) {} renderMain();
     const giveUp = setTimeout(() => { if (sendTo && sendTo.peer === peer && !sendTo.conn) { sendTo.status = 'No PC is listening under ' + code + ' — press 📲 Receive voices on the PC first.'; renderMain(); } }, 15000);
     peer.on('open', () => {
       const conn = peer.connect(PEER_PREFIX + 'v-' + code.toLowerCase(), { reliable: true });
       conn.on('open', () => { clearTimeout(giveUp); if (sendTo && sendTo.peer === peer) { sendTo.conn = conn; sendTo.status = ''; renderMain(); } });
-      conn.on('data', m => { if (!m || !sendTo) return; if (m.t === 'ok') { sendTo.status = '✅ ' + m.name + ' is on the PC' + (m.cloned ? ' and ready' : '') + '. Record the next one.'; myVoice = null; try { localStorage.removeItem(TVOICE_KEY); } catch (e) {} } else if (m.t === 'fail') sendTo.status = '❌ ' + m.error; renderMain(); });
+      conn.on('data', m => { if (!m || !sendTo) return;
+        if (m.t === 'welcome') { sendTo.bots = m.bots || []; sendTo.voices = m.voices || []; sendTo.status = ''; renderMain(); return; }
+        if (m.t === 'ok') { sendTo.status = '✅ ' + m.name + ' is on the PC' + (m.cloned ? ' and ready' : '') + (m.what ? ' — ' + m.what : '') + '. Record the next one, or you’re done.'; if (!sendTo.voices.includes(m.name)) sendTo.voices.push(m.name); myVoice = null; try { localStorage.removeItem(TVOICE_KEY); } catch (e) {} }
+        else if (m.t === 'fail') sendTo.status = '❌ ' + m.error; renderMain(); });
       conn.on('close', () => { if (sendTo && sendTo.peer === peer) { sendTo.status = 'The PC closed the connection.'; sendTo.conn = null; renderMain(); } });
     });
     peer.on('error', e => { clearTimeout(giveUp); if (sendTo && sendTo.peer === peer) { sendTo.status = e && e.type === 'peer-unavailable' ? 'No PC is listening under ' + code + ' — press 📲 Receive voices on the PC first.' : 'Couldn’t connect: ' + (e && (e.type || e.message)); renderMain(); } });
@@ -2505,18 +2527,24 @@ const Trainer = (() => {
   function sendVoice() {
     if (!sendTo || !sendTo.conn || !sendTo.conn.open) { toast('Connect to the PC first', 'red'); return; }
     if (!myVoice) { toast('Record a voice first', 'red'); return; }
-    const name = recName();
-    try { sendTo.conn.send({ t: 'voicefile', name, mime: myVoice.mime, b64: myVoice.b64, secs: myVoice.secs, hash: myVoice.hash }); sendTo.status = 'Sending ' + name + '…'; renderMain(); }
+    const name = recName(), use = ($('trVoiceUse') || {}).value || 'coach';
+    try { sendTo.conn.send({ t: 'voicefile', name, mime: myVoice.mime, b64: myVoice.b64, secs: myVoice.secs, hash: myVoice.hash, use }); sendTo.status = 'Sending ' + name + '…'; renderMain(); }
     catch (e) { toast('Couldn’t send: ' + cleanErr(e), 'red'); }
+  }
+  function useSel(bots) {
+    return '<select id="trVoiceUse"><option value="coach">the coach’s voice (and the Angel’s)</option><option value="mine">my own seat at the table</option>' + (bots || []).map(b => '<option value="bot:' + esc(b) + '">the character ' + esc(b) + '</option>').join('') + '<option value="">just keep it on the PC</option></select>';
   }
   function sendHtml() {
     if (HAS_LIB || !CAN_RECORD || typeof Peer !== 'function') return '';
-    return '<div class="tr-inbox"><b>📲 Send to a PC</b> <span class="tr-dim">On the PC’s Poker Angel press “Receive voices from a phone”, then enter its code here. Name each voice, record, send — then the next.</span>'
-      + '<div class="tr-row"><input id="trSendCode" placeholder="PC code" maxlength="5" style="width:110px;text-transform:uppercase" value="' + esc(sendTo ? sendTo.code : '') + '" /><button class="ghost" data-act="rec:connect">' + (sendTo && sendTo.conn ? 'Connected ✓' : 'Connect') + '</button>'
-      + '<input id="trVoiceName" placeholder="Name this voice (e.g. Mum)" maxlength="16" style="width:170px" />'
-      + (myVoice && sendTo && sendTo.conn ? '<button data-act="rec:send">📤 Send to PC</button>' : '') + '</div>'
+    const con = sendTo && sendTo.conn;
+    return '<div class="tr-inbox"><b>📲 Send to the PC</b> <span class="tr-dim">The code is on the PC’s Play menu under 🎙 Voices — it never changes. Enter it once; then name a voice, record, choose what it’s for, send.</span>'
+      + '<div class="tr-row"><input id="trSendCode" placeholder="PC code" maxlength="5" style="width:110px;text-transform:uppercase" value="' + esc(sendTo ? sendTo.code : (ls(PCCODE_KEY) || '')) + '" /><button class="' + (con ? 'ghost' : '') + '" data-act="rec:connect">' + (con ? 'Connected ✓' : 'Connect') + '</button></div>'
+      + (con ? '<div class="tr-row"><input id="trVoiceName" placeholder="Name this voice (e.g. Mum)" maxlength="16" style="width:170px" /><label class="tr-dim">Use it as ' + useSel(sendTo.bots) + '</label>'
+        + (myVoice ? '<button data-act="rec:send">📤 Send to PC</button>' : '<span class="tr-dim">— record above, then send</span>') + '</div>'
+        + (sendTo.voices && sendTo.voices.length ? '<div class="tr-row"><span class="tr-dim">Already on the PC:</span>' + sendTo.voices.map(v => '<button class="ghost tr-mini" data-act="rec:usepc" data-name="' + esc(v) + '" title="Give this voice the job chosen above">' + esc(v) + '</button>').join('') + '</div>' : '') : '')
       + (sendTo && sendTo.status ? '<div class="tr-dim">' + esc(sendTo.status) + '</div>' : '') + '</div>';
   }
+  function usePcVoice(name) { if (!sendTo || !sendTo.conn || !sendTo.conn.open) return; try { sendTo.conn.send({ t: 'use', name, use: ($('trVoiceUse') || {}).value || 'coach' }); sendTo.status = 'Telling the PC…'; renderMain(); } catch (e) {} }
   const PUBLIC_URL = 'frankthedog.github.io/poker-angel';
   const libVoiceId = name => { const v = voiceLib.find(x => x.name === name); return v && v.voiceId || ''; };
   function voiceRecHtml() {
@@ -3713,7 +3741,7 @@ const Trainer = (() => {
       if (v === 'start' || v === 'again') return startTournament();
       if (v === 'menu') { freshTable(); broadcast(); renderPlay(); }
     },
-    rec: (v, b) => { const n = b && b.dataset.name; if (v === 'start') recStart(); else if (v === 'stop') recStop(); else if (v === 'play') recPlayback(n); else if (v === 'save') recSave(n); else if (v === 'delete') recDelete(n); else if (v === 'clone') recClone(n); else if (v === 'more') recStart(n, true); else if (v === 'inbox') inboxOpen(); else if (v === 'inboxclose') inboxClose(); else if (v === 'connect') sendConnect(($('trSendCode') || {}).value); else if (v === 'send') sendVoice(); else if (v === 'import') { const f = $('trRecFile'); if (f) { f.onchange = () => { recImport(f.files && f.files[0]); f.value = ''; }; f.click(); } } },
+    rec: (v, b) => { const n = b && b.dataset.name; if (v === 'start') recStart(); else if (v === 'stop') recStop(); else if (v === 'play') recPlayback(n); else if (v === 'save') recSave(n); else if (v === 'delete') recDelete(n); else if (v === 'clone') recClone(n); else if (v === 'more') recStart(n, true); else if (v === 'inbox') inboxOpen(); else if (v === 'inboxclose') inboxClose(); else if (v === 'connect') sendConnect(($('trSendCode') || {}).value); else if (v === 'send') sendVoice(); else if (v === 'usepc') usePcVoice(n); else if (v === 'import') { const f = $('trRecFile'); if (f) { f.onchange = () => { recImport(f.files && f.files[0]); f.value = ''; }; f.click(); } } },
     room: v => {
       const nameIn = $('trName');
       if (nameIn) ls(NAME_KEY, String(nameIn.value || '').trim().slice(0, 16));
@@ -3760,7 +3788,7 @@ const Trainer = (() => {
     const nav = $('navTrainer'); if (nav) nav.classList.remove('on');
   }
   function wire() {
-    loadLib().then(() => { if (shown && tab === 'play' && !g) renderPlay(); });
+    loadLib().then(() => { if (HAS_LIB && typeof Peer === 'function') inboxOpen(); if (shown && tab === 'play' && !g) renderPlay(); });
     document.addEventListener('click', () => { if (actx && actx.state === 'suspended') actx.resume().catch(() => {}); }, true);
     loadVoiceCfg();
     if (CAN_SPEAK) { try { speechSynthesis.onvoiceschanged = () => { if (shown && tab === 'play') renderPlay(); }; } catch (e) {} }
@@ -3806,7 +3834,7 @@ const Trainer = (() => {
   }
 
   // ⚙ Settings changed the voice: pick the new one up (app.js calls this when the dialog closes).
-  function voiceChanged() { Promise.all([loadVoiceCfg(), loadLib()]).then(() => { ttsFails = 0; stockVoices = null; chatterSchedule(); if (shown && tab === 'play') renderPlay(); }); }
+  function voiceChanged() { Promise.all([loadVoiceCfg(), loadLib()]).then(() => { if (HAS_LIB && !inbox) inboxOpen(); ttsFails = 0; stockVoices = null; chatterSchedule(); if (shown && tab === 'play') renderPlay(); }); }
   return {
     wire, open, close, voiceChanged, voiceLabel, sleepStory,
     _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech, storyHtml, levelWhy, COACH_LEVELS, primerHtml, HAND_RANKS, rankOf, adviceForSpot, gradeForSpot, recordCoached, levelWhyFor: levelWhy, REMARKS, pickRemark, INVITE, VOICE_PARA, VOICE_PARA2, TALK_LEVELS, TALK_SYSTEM, setLevelForTest: v => { opts.level = v; } },
