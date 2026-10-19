@@ -2408,6 +2408,7 @@ const Trainer = (() => {
       const finish = () => {
         if (rec.done) return; rec.done = true;
         const secs = Math.round((Date.now() - rec.t0) / 1000), blob = new Blob(rec.chunks, { type: (rec.r && rec.r.mimeType) || mime || 'audio/webm' });
+        if (!blob.size) { try { rec.stream && rec.stream.getTracks().forEach(t => t.stop()); } catch (e) {} rec.r = null; rec.stream = null; clearInterval(rec.timer); const why = 'The phone gave back no audio after ' + secs + ' s. Try once more; if it happens again, open the page in Chrome (Android) or make sure Safari is up to date (iPhone), and allow the microphone when asked.'; toast(why, 'red'); if (sendTo) { sendTo.status = '❌ ' + why; } renderMain(); return; }
         try { rec.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
         rec.r = null; rec.stream = null; clearInterval(rec.timer);
         if (sendTo) { sendTo.status = 'Recorded ' + secs + ' s (' + (blob.type || 'audio') + ', ' + Math.round(blob.size / 1024) + ' KB).'; }
@@ -2417,7 +2418,8 @@ const Trainer = (() => {
         fr.readAsDataURL(blob);
       };
       rec.finish = finish;
-      try { rec.r.start(250); } catch (e) { rec.r.start(); }
+      const safari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent) || /iPhone|iPad|iPod/i.test(navigator.userAgent);
+      try { if (safari) rec.r.start(); else rec.r.start(250); } catch (e) { rec.r.start(); }   // Safari hands the audio over only at the end; slices can leave it stuck
       rec.timer = setInterval(() => { const el = $('trRecTime'); if (el) el.textContent = Math.round((Date.now() - rec.t0) / 1000) + ' s'; if (Date.now() - rec.t0 > TVOICE_MAX_S * 1000) recStop(); }, 250);
       renderMain();
     } catch (e) { toast('Couldn’t use the microphone: ' + cleanErr(e), 'red'); }
@@ -2426,7 +2428,7 @@ const Trainer = (() => {
     if (!rec.r) return;
     const el = $('trRecTime'); if (el) el.textContent = 'stopping…';
     try { if (rec.r.state !== 'inactive') { try { rec.r.requestData(); } catch (e) {} rec.r.stop(); } } catch (e) {}
-    setTimeout(() => { if (rec.finish && !rec.done) rec.finish(); }, 1500);           // the phone never said "stopped": finish anyway
+    setTimeout(() => { if (rec.finish && !rec.done) { try { if (rec.r && rec.r.state !== 'inactive') rec.r.requestData(); } catch (e) {} setTimeout(() => { if (rec.finish && !rec.done) rec.finish(); }, 800); } }, 2500);   // the phone never said "stopped": ask once more, then finish anyway
   }
   let recPlay = null;
   const playB64 = (mime, b64) => { if (recPlay) { try { recPlay.pause(); } catch (e) {} } recPlay = new Audio('data:' + mime + ';base64,' + b64); recPlay.play().catch(() => {}); };
