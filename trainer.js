@@ -3796,6 +3796,10 @@ const Trainer = (() => {
     const nav = $('navTrainer'); if (nav) nav.classList.remove('on');
   }
   function wire() {
+    // Anything that breaks shows up on the page, so a phone can tell us what went wrong.
+    const showErr = msg => { try { let b = document.getElementById('paErr'); if (!b) { b = document.createElement('div'); b.id = 'paErr'; b.style.cssText = 'position:fixed;left:8px;right:8px;top:8px;z-index:99999;background:#7f1d1d;color:#fff;padding:10px 12px;border-radius:10px;font:13px/1.4 system-ui;white-space:pre-wrap;word-break:break-word;box-shadow:0 10px 30px rgba(0,0,0,.5)'; b.onclick = () => b.remove(); document.body.appendChild(b); } b.textContent = '⚠ Poker Angel hit a problem (tap to hide): ' + msg + ' — ' + navigator.userAgent.slice(0, 120); } catch (e) {} };
+    window.addEventListener('error', e => showErr((e.message || 'error') + (e.filename ? ' @ ' + e.filename.split('/').pop() + ':' + e.lineno : '')));
+    window.addEventListener('unhandledrejection', e => showErr('promise: ' + (e.reason && (e.reason.message || e.reason) || 'rejected')));
     loadLib().then(() => { if (HAS_LIB && typeof Peer === 'function') inboxOpen(); if (shown && tab === 'play' && !g) renderPlay(); });
     document.addEventListener('click', () => { if (actx && actx.state === 'suspended') actx.resume().catch(() => {}); }, true);
     loadVoiceCfg();
