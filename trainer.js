@@ -2263,7 +2263,7 @@ const Trainer = (() => {
     if (!window.api || !window.api.getConfig) return;
     try { const c = await window.api.getConfig(); voiceCfg = { engine: c.ttsEngine || 'local', hasTtsKey: !!c.hasTtsKey, ttsVoice: c.ttsVoice || '', ttsVoiceName: c.ttsVoiceName || '' }; } catch (e) {}
   }
-  const HAS_TTS = () => !!(window.api && window.api.ttsSpeak) && voiceCfg.engine === 'eleven' && voiceCfg.hasTtsKey && !!voiceCfg.ttsVoice;
+  const HAS_TTS = () => !!(window.api && window.api.ttsSpeak) && ((voiceCfg.engine === 'eleven' && voiceCfg.hasTtsKey) || voiceCfg.engine === 'own') && !!voiceCfg.ttsVoice;
   const CAN_TALK = () => CAN_SPEAK || HAS_TTS();
   const localVoices = () => { try { return CAN_SPEAK ? speechSynthesis.getVoices() : []; } catch (e) { return []; } };
   function pickVoice() {
@@ -2527,14 +2527,15 @@ const Trainer = (() => {
         + '<button data-act="rec:start">🎙 Record</button><button class="ghost" data-act="rec:import">📂 Import a recording</button><input type="file" id="trRecFile" accept="audio/*,.m4a,.mp3,.wav,.ogg,.webm" style="display:none" />';
     let list = '';
     if (HAS_LIB) {
+      const canClone = HAS_TTS() || voiceCfg.hasTtsKey || voiceCfg.engine === 'own';
       list = voiceLib.length ? '<div class="tr-voices">' + voiceLib.map(v => '<div class="tr-vrow"><label title="Sent to the host when you join a table — your character speaks as you"><input type="radio" name="trMyVoice" data-myvoice="' + esc(v.name) + '"' + (opts.myVoiceName === v.name ? ' checked' : '') + ' /> mine</label>'
-        + '<b>' + esc(v.name) + '</b><span class="tr-dim">' + (v.takes > 1 ? v.takes + ' takes · ' : '') + (v.secs ? v.secs + ' s · ' : '') + fmtWhen(v.when) + ' · ' + (v.voiceId ? '✅ ready' : HAS_TTS() || voiceCfg.hasTtsKey ? '<button class="ghost tr-mini" data-act="rec:clone" data-name="' + esc(v.name) + '">Clone on ElevenLabs</button>' : 'saved; cloned once ElevenLabs is set up') + '</span>'
+        + '<b>' + esc(v.name) + '</b><span class="tr-dim">' + (v.takes > 1 ? v.takes + ' takes · ' : '') + (v.secs ? v.secs + ' s · ' : '') + fmtWhen(v.when) + ' · ' + (v.voiceId ? '✅ ready' : canClone ? '<button class="ghost tr-mini" data-act="rec:clone" data-name="' + esc(v.name) + '">Make it a voice</button>' : 'saved; becomes a voice once a voice engine is set up (⚙ Settings → Voice)') + '</span>'
         + '<span class="tr-vbtns">' + (v.takes < 3 && !rec.r ? '<button class="ghost tr-mini" data-act="rec:more" data-name="' + esc(v.name) + '" title="Record a second, more varied paragraph — a noticeably better clone">➕ take</button>' : '') + '<button class="ghost tr-mini" data-act="rec:play" data-name="' + esc(v.name) + '">▶</button><button class="ghost tr-mini" data-act="rec:save" data-name="' + esc(v.name) + '" title="Save as a file">⬇</button><button class="ghost tr-mini" data-act="rec:delete" data-name="' + esc(v.name) + '" title="Delete this voice (and its clone)">✖</button></span></div>').join('') + '</div>'
         : '<div class="tr-dim">No voices yet.</div>';
     } else if (myVoice) {
       list = '<div class="tr-vrow"><b>My table voice</b><span class="tr-dim">' + (myVoice.secs ? 'Recorded ' + myVoice.secs + ' s on ' : 'Imported on ') + fmtWhen(myVoice.when) + '</span><span class="tr-vbtns"><button class="ghost tr-mini" data-act="rec:play">▶ Play back</button><button class="ghost tr-mini" data-act="rec:save">⬇ Save</button><button class="ghost tr-mini" data-act="rec:delete">Delete</button></span></div>';
     }
-    return '<div class="tr-q tr-rec"><b>🎙 Voices</b> — ' + (HAS_LIB ? 'record as many as you like (you, family, friends), each with a name. Each is cloned on your ElevenLabs account, then you can give it to any character at the table (🎭 below), choose it as the coach’s voice in ⚙ Settings → Voice, or mark it “mine” to be sent to a table you join. ' : 'read the paragraph once (about 25 seconds). When you join a friend’s table it goes to the host, whose ElevenLabs account gives your character your own voice. ')
+    return '<div class="tr-q tr-rec"><b>🎙 Voices</b> — ' + (HAS_LIB ? 'record as many as you like (you, family, friends), each with a name. Each becomes a voice on ' + (voiceCfg.engine === 'own' ? 'your own voice engine on this PC' : 'your ElevenLabs account') + ', then you can give it to any character at the table (🎭 below), choose it as the coach’s voice in ⚙ Settings → Voice, or mark it “mine” to be sent to a table you join. ' : 'read the paragraph once (about 25 seconds). When you join a friend’s table it goes to the host, whose ElevenLabs account gives your character your own voice. ')
       + (ON_PHONE ? 'You’re on a phone — a good microphone. Record here and send each voice straight to the PC (📲 below), or join a table from this phone.' : 'A phone’s microphone is usually better than a PC’s: press 📲 Receive voices from a phone below, then record on the phone and each voice arrives here.')
       + '<div class="tr-para">' + esc(rec.r && rec.append ? VOICE_PARA2 : VOICE_PARA) + '</div>' + (rec.r && rec.append ? '<div class="tr-dim">Second take: a different paragraph, with questions and numbers, so the clone hears more of the voice.</div>' : '') + '<div class="tr-row">' + recRow + '</div>' + list
       + inboxHtml() + sendHtml()
