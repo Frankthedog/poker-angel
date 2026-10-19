@@ -1324,6 +1324,10 @@ const Trainer = (() => {
   //   own only — your own cards and grades; everyone's are revealed when the hand ends, so no grade
   //              gives away a hand while it is still being played.
   const NAME_KEY = 'pokerangel.name', PEER_PREFIX = 'pokerangel-', NEXT_HAND_MS = 6000;
+  // STUN finds a direct route; the free relay carries the data when there isn't one (a phone on mobile
+  // data, a strict router). The PeerJS server only introduces the two ends.
+  const PEER_OPTS = { config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp'], username: 'openrelayproject', credential: 'openrelayproject' }] } };
   let me = 0;                       // my seat (-1 = watching until the next deal)
   // The explanation of my latest decision stays on the table until I press Continue (or Got it at a
   // friends' table). Solo, the bots wait for that press too — unless "Pause after each decision" is off.
@@ -1916,7 +1920,7 @@ const Trainer = (() => {
     if (WEB) return hostTableWeb();
     if (noPeer() || room) return;
     const code = newCode();
-    const peer = new Peer(PEER_PREFIX + code.toLowerCase());
+    const peer = new Peer(PEER_PREFIX + code.toLowerCase(), PEER_OPTS);
     autoStop(true); room = { role: 'host', code, peer, conns: new Map(), faceUp: true, status: 'Opening the table…', voices: {} }; ratings = {};
     if (HAS_TTS() && opts.myVoiceName && libVoiceId(opts.myVoiceName)) room.voices[myName()] = libVoiceId(opts.myVoiceName);
     me = 0; g = null; decisions = []; token++; renderPlay();       // any solo hand in progress is abandoned
@@ -2009,7 +2013,7 @@ const Trainer = (() => {
     if (noPeer() || room) return;
     code = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (code.length !== 5) { toast('A table code is 5 letters/numbers', 'red'); return; }
-    const peer = new Peer();
+    const peer = new Peer(PEER_OPTS);
     autoStop(true); room = { role: 'guest', code, peer, conn: null, faceUp: true, players: [], status: 'Connecting to table ' + code + '…' }; ratings = {};
     g = null; me = -1; decisions = []; renderPlay();
     const giveUp = setTimeout(() => { if (room && room.peer === peer && !(room.conn && room.conn.open)) { toast('Couldn’t reach table ' + code + ' — check the code and that the host is still there', 'red'); leaveRoom(true); } }, 20000);
@@ -2478,7 +2482,7 @@ const Trainer = (() => {
   }
   function inboxOpen() {
     if (!HAS_LIB || inbox || typeof Peer !== 'function') return;
-    const code = phoneCode(), peer = new Peer(PEER_PREFIX + 'v-' + code.toLowerCase());
+    const code = phoneCode(), peer = new Peer(PEER_PREFIX + 'v-' + code.toLowerCase(), PEER_OPTS);
     inbox = { code, peer, got: [], status: 'Opening…' };
     peer.on('open', () => { if (inbox && inbox.peer === peer) { inbox.status = ''; renderMain(); } });
     peer.on('connection', conn => {
@@ -2500,9 +2504,12 @@ const Trainer = (() => {
         } catch (e) { try { conn.send({ t: 'fail', error: cleanErr(e) }); } catch (x) {} toast('📲 ' + name + ': ' + cleanErr(e), 'red'); }
       });
     });
+    peer.on('disconnected', () => { if (inbox && inbox.peer === peer && !peer.destroyed) { try { peer.reconnect(); } catch (e) {} } });   // the signalling server dropped us: register again under the same code
     peer.on('error', e => { if (!inbox || inbox.peer !== peer) return; if (e && e.type === 'unavailable-id') { opts.phoneCode = ''; inboxClose(true); inboxOpen(); return; } if (/network|server|socket|disconnected/i.test(e.type || '')) { inbox.status = 'Reconnecting…'; try { peer.reconnect(); } catch (x) {} renderMain(); return; } inbox.status = 'Connection trouble: ' + (e && (e.type || e.message)); renderMain(); });
     renderMain();
   }
+  // Once a minute: if the listener has died, bring it back.
+  setInterval(() => { try { if (!HAS_LIB || typeof Peer !== 'function') return; if (!inbox) return inboxOpen(); if (inbox.peer.destroyed) { inbox = null; inboxOpen(); } else if (inbox.peer.disconnected) inbox.peer.reconnect(); } catch (e) {} }, 60000);
   function inboxClose(quiet) { if (!inbox) return; try { inbox.peer.destroy(); } catch (e) {} inbox = null; if (!quiet) renderMain(); }
   function inboxHtml() {
     if (!HAS_LIB || typeof Peer !== 'function') return '';
@@ -2518,7 +2525,7 @@ const Trainer = (() => {
     if (!/^[A-Z2-9]{5}$/.test(code)) { toast('Enter the 5-letter code shown on the PC', 'red'); return; }
     if (typeof Peer !== 'function') { toast('The connection library didn’t load', 'red'); return; }
     if (sendTo) { try { sendTo.peer.destroy(); } catch (e) {} }
-    const peer = new Peer();
+    const peer = new Peer(PEER_OPTS);
     sendTo = { code, peer, conn: null, status: 'Connecting to PC ' + code + '…', bots: [], voices: [] }; try { ls(PCCODE_KEY, code); } catch (e) {} renderMain();
     const giveUp = setTimeout(() => { if (sendTo && sendTo.peer === peer && !sendTo.conn) { sendTo.status = 'No PC is listening under ' + code + ' — press 📲 Receive voices on the PC first.'; renderMain(); } }, 15000);
     peer.on('open', () => {
@@ -2535,7 +2542,7 @@ const Trainer = (() => {
   function sendVoice() {
     if (!sendTo || !sendTo.conn || !sendTo.conn.open) { toast('Connect to the PC first', 'red'); return; }
     if (!myVoice) { toast('Record a voice first', 'red'); return; }
-    const name = recName(), use = ($('trVoiceUse') || {}).value || 'coach';
+    const name = recName(), useEl = $('trVoiceUse'), use = useEl ? useEl.value : 'coach';
     try { sendTo.conn.send({ t: 'voicefile', name, mime: myVoice.mime, b64: myVoice.b64, secs: myVoice.secs, hash: myVoice.hash, use }); sendTo.status = 'Sending ' + name + '…'; renderMain(); }
     catch (e) { toast('Couldn’t send: ' + cleanErr(e), 'red'); }
   }
@@ -2552,7 +2559,7 @@ const Trainer = (() => {
         + (sendTo.voices && sendTo.voices.length ? '<div class="tr-row"><span class="tr-dim">Already on the PC:</span>' + sendTo.voices.map(v => '<button class="ghost tr-mini" data-act="rec:usepc" data-name="' + esc(v) + '" title="Give this voice the job chosen above">' + esc(v) + '</button>').join('') + '</div>' : '') : '')
       + (sendTo && sendTo.status ? '<div class="tr-dim">' + esc(sendTo.status) + '</div>' : '') + '</div>';
   }
-  function usePcVoice(name) { if (!sendTo || !sendTo.conn || !sendTo.conn.open) return; try { sendTo.conn.send({ t: 'use', name, use: ($('trVoiceUse') || {}).value || 'coach' }); sendTo.status = 'Telling the PC…'; renderMain(); } catch (e) {} }
+  function usePcVoice(name) { if (!sendTo || !sendTo.conn || !sendTo.conn.open) return; const useEl = $('trVoiceUse'); try { sendTo.conn.send({ t: 'use', name, use: useEl ? useEl.value : 'coach' }); sendTo.status = 'Telling the PC…'; renderMain(); } catch (e) {} }
   const PUBLIC_URL = 'frankthedog.github.io/poker-angel';
   const libVoiceId = name => { const v = voiceLib.find(x => x.name === name); return v && v.voiceId || ''; };
   function voiceRecHtml() {
