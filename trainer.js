@@ -1418,6 +1418,7 @@ const Trainer = (() => {
   }
   function tally(G) {
     stats[G.v] = (stats[G.v] || 0) + 1;
+    if (G.v !== 'bad') dailyAdd('match');
     if (G.street != null) { stats.byStreet = stats.byStreet || [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]]; const row = stats.byStreet[G.street] || (stats.byStreet[G.street] = [0, 0, 0]); row[G.v === 'good' ? 0 : G.v === 'ok' ? 1 : 2]++; } stats.loss = Math.round((stats.loss + (G.loss || 0)) * 100) / 100;
     if (G.usd) stats.lossUsd = Math.round(((stats.lossUsd || 0) + G.usd) * 100) / 100;
     if (G.v === 'bad') { const key = (G.street != null ? STREET[G.street] + ' · ' : '') + G.head; stats.leaks[key] = (stats.leaks[key] || 0) + 1; }
@@ -2060,16 +2061,32 @@ const Trainer = (() => {
   }
   // ---- today's challenges (from PokerStars' daily challenges): small goals that build the habit ----
   const DAILY_KEY = 'pokerangel.daily';
-  const GOALS = [['hands', 'Play 20 hands', 20], ['pre', 'Answer 10 preflop spots', 10], ['pf', 'Answer 10 push/fold spots', 10], ['icm', 'Answer 5 prize-money spots', 5]];
+  // Today's challenges are chosen from your record each morning: the street you match least often sets
+  // the main drill, the drill you score lowest on (or have done least) is the other, and one goal is
+  // always "match the best play". The day's set is fixed once chosen.
+  const GOAL_LABELS = { hands: ['Play 20 hands', 20], match: ['Match the best play on 15 decisions', 15], pre: ['Answer 10 preflop spots', 10], odds: ['Answer 8 pot-odds spots', 8], eq: ['Answer 5 equity spots', 5], outs: ['Answer 6 outs spots', 6], sd: ['Answer 6 showdown spots', 6], pf: ['Answer 10 push/fold spots', 10], icm: ['Answer 5 prize-money spots', 5] };
+  function goalsToday() {
+    const bs = stats.byStreet || [], rate = row => { const n = (row || []).reduce((a, b) => a + b, 0); return n >= 10 ? ((row[0] || 0) + (row[1] || 0)) / n : null; };
+    const pre = rate(bs[0]), post = [1, 2, 3].map(k => rate(bs[k])).filter(x => x != null);
+    const postRate = post.length ? Math.min.apply(null, post) : null;
+    const keys = ['hands', 'match'];
+    if (pre != null && (postRate == null || pre <= postRate)) keys.push('pre'); else if (postRate != null) keys.push('odds', 'eq'); else keys.push('pre');
+    const D = stats.drills || {}, acc = k => { const d = D[k] || [0, 0]; return d[0] >= 5 ? d[1] / d[0] : 0.59 + (d[0] || 0) / 1000; };   // a weak drill (under ~60%) comes first; then ones barely tried; strong ones last
+    const pool = ['pf', 'icm', 'outs', 'sd', 'odds', 'pre'].filter(k => keys.indexOf(k) < 0).sort((a, b) => acc(a) - acc(b));
+    keys.push(pool[0]);
+    return keys.map(k => [k, GOAL_LABELS[k][0], GOAL_LABELS[k][1]]);
+  }
+  const GOALS_OF = d => (d.goals && d.goals.length ? d.goals : goalsToday());
   function daily() {
     const today = new Date().toISOString().slice(0, 10); let d = null;
     try { d = JSON.parse(ls(DAILY_KEY) || 'null'); } catch (e) { d = null; }
-    return d && d.date === today ? d : { date: today };
+    if (d && d.date === today) return d;
+    return { date: today, goals: goalsToday() };
   }
   function dailyAdd(k) { const d = daily(); d[k] = (d[k] || 0) + 1; ls(DAILY_KEY, JSON.stringify(d)); }
   function dailyHtml() {
-    const d = daily(), done = GOALS.filter(([k, , n]) => (d[k] || 0) >= n).length;
-    return '<div class="tr-daily"><b>Today’s challenges</b><span class="tr-dim">' + done + ' of ' + GOALS.length + ' done</span>' + GOALS.map(([k, label, n]) => {
+    const d = daily(), GOALS = GOALS_OF(d), done = GOALS.filter(([k, , n]) => (d[k] || 0) >= n).length;
+    return '<div class="tr-daily"><b>Today’s challenges</b><span class="tr-dim">' + done + ' of ' + GOALS.length + ' done · chosen from where you slip most</span>' + GOALS.map(([k, label, n]) => {
       const v = Math.min(d[k] || 0, n);
       return '<div class="tr-goal' + (v >= n ? ' done' : '') + '"><span>' + label + '</span><span class="tr-bar"><i style="width:' + Math.round(v / n * 100) + '%"></i></span><small>' + v + ' / ' + n + '</small></div>';
     }).join('') + '</div>';
@@ -3357,6 +3374,7 @@ const Trainer = (() => {
     $('trMain').innerHTML = h + drillScore('pre', 'correct') + '</div>';
   }
   function answerPre(kind) {
+    dailyAdd('pre');
     const d = drill.pre; if (!d || d.done) return;
     d.done = gradePre(d, kind); score('pre', d.done.v !== 'bad');
     feed('', '<b>Preflop drill · ' + esc(d.done.head) + '</b>' + fmtWhy(d.done.why));
@@ -3379,6 +3397,7 @@ const Trainer = (() => {
     void need;
   }
   function answerOdds() {
+    dailyAdd('odds');
     const d = drill.odds; if (!d || d.done) return;
     const v = parseFloat(($('trOddsIn') || {}).value);
     if (!isFinite(v)) { toast('Type a percentage', 'red'); return; }
@@ -3410,6 +3429,7 @@ const Trainer = (() => {
     if (sl && inp) { sl.oninput = () => { inp.value = sl.value; }; inp.oninput = () => { sl.value = inp.value; }; }
   }
   function answerEq() {
+    dailyAdd('eq');
     const d = drill.eq; if (!d || d.done) return;
     const v = parseFloat(($('trEqIn') || {}).value);
     if (!isFinite(v)) { toast('Type a percentage', 'red'); return; }
@@ -3448,6 +3468,7 @@ const Trainer = (() => {
     $('trMain').innerHTML = h + drillScore('outs', 'exact') + '</div>';
   }
   function answerOuts() {
+    dailyAdd('outs');
     const d = drill.outs; if (!d || d.done) return;
     const v = parseInt(($('trOutsIn') || {}).value, 10);
     if (!isFinite(v)) { toast('Type a number', 'red'); return; }
@@ -3482,6 +3503,7 @@ const Trainer = (() => {
     $('trMain').innerHTML = h + drillScore('sd', 'correct') + '</div>';
   }
   function answerSd(v) {
+    dailyAdd('sd');
     const d = drill.sd; if (!d || d.done) return;
     const best = Math.max.apply(null, d.scores), ws = d.scores.map((s, i) => s === best ? i : -1).filter(i => i >= 0);
     const ok = v === 'split' ? ws.length > 1 : (ws.length === 1 && ws[0] === +v);
@@ -3538,6 +3560,7 @@ const Trainer = (() => {
     $('trMain').innerHTML = h + drillScore('pf', 'correct') + '</div>';
   }
   function answerPf(v) {
+    dailyAdd('pf');
     const d = drill.pf; if (!d || d.done) return;
     let right, why;
     if (d.type === 'push') {
@@ -4245,7 +4268,7 @@ const Trainer = (() => {
   function voiceChanged() { Promise.all([loadVoiceCfg(), loadLib()]).then(() => { if (HAS_LIB && !inbox) inboxOpen(); ttsFails = 0; stockVoices = null; chatterSchedule(); if (shown && tab === 'play') renderPlay(); }); }
   return {
     wire, open, close, voiceChanged, voiceLabel, sleepStory,
-    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech, storyHtml, levelWhy, COACH_LEVELS, rangeSetFor, tableLessonScore, FIELDS, whatIf, closeSitting, gradeShortCash, mulberry, setFieldForTest: v => { const p = opts.field; opts.field = v; return p; }, candidates, thresholds, pickBest, inPosition, primerHtml, HAND_RANKS, rankOf, adviceForSpot, gradeForSpot, recordCoached, levelWhyFor: levelWhy, REMARKS, pickRemark, INVITE, VOICE_PARA, VOICE_PARA2, TALK_LEVELS, TALK_SYSTEM, setLevelForTest: v => { opts.level = v; } },
+    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech, storyHtml, levelWhy, COACH_LEVELS, rangeSetFor, tableLessonScore, FIELDS, whatIf, closeSitting, gradeShortCash, mulberry, goalsToday, setStatsForTest: v => { Object.assign(stats, v); }, setFieldForTest: v => { const p = opts.field; opts.field = v; return p; }, candidates, thresholds, pickBest, inPosition, primerHtml, HAND_RANKS, rankOf, adviceForSpot, gradeForSpot, recordCoached, levelWhyFor: levelWhy, REMARKS, pickRemark, INVITE, VOICE_PARA, VOICE_PARA2, TALK_LEVELS, TALK_SYSTEM, setLevelForTest: v => { opts.level = v; } },
   };
 })();
 
