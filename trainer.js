@@ -270,7 +270,48 @@ const Trainer = (() => {
     mixed: { name: 'A mixed table (every type and level)', styles: Object.keys(STYLES), levels: ['beginner', 'casual', 'regular', 'pro'] },
     easy: { name: 'An easier table (beginners and casual players)', styles: ['fish', 'station', 'maniac', 'weaktight', 'nit', 'lag'], levels: ['beginner', 'casual'] },
     tough: { name: 'A tough table (regulars and pros)', styles: ['tag', 'lag', 'shark', 'trapper', 'nit'], levels: ['regular', 'pro'] },
+    // tables of ONE type, to practise the adjustment the Reading lesson teaches — and score only that
+    stations: { name: 'A table of calling stations — practise: value bet thin, never bluff', styles: ['station', 'fish'], levels: ['beginner', 'casual'], lesson: 'stations' },
+    nits: { name: 'A table of nits — practise: steal their blinds, fold to their raises', styles: ['nit', 'weaktight'], levels: ['casual', 'regular'], lesson: 'nits' },
+    maniacs: { name: 'A table of maniacs — practise: call down lighter, let them bluff', styles: ['maniac', 'lag'], levels: ['casual', 'regular'], lesson: 'maniacs' },
+    pros: { name: 'A table of tight-aggressive pros — practise: tight, positional, no loose calls', styles: ['tag', 'shark'], levels: ['pro'], lesson: 'pros' },
   };
+  const TABLE_LESSONS = {
+    stations: { title: 'calling stations', good: 'value bet into a caller', bad: 'bluffed a player who calls too much' },
+    nits: { title: 'nits', good: 'stole from players who only play premiums', bad: 'paid off a nit’s raise with a hand that’s behind' },
+    maniacs: { title: 'maniacs', good: 'called the maniac down lighter', bad: 'folded to a maniac’s bet with enough to call' },
+    pros: { title: 'pros', good: 'played tight and in position', bad: 'called a raise out of position with a weak hand' },
+  };
+  // Score one decision against the table's lesson (only on a one-type table). Returns +1, -1 or 0 with a note.
+  function tableLessonScore(s, kind, E) {
+    const F = FIELDS[opts.field || 'mixed'], L = F && F.lesson; if (!L) return null;
+    const e = E == null ? null : E / 100, late = /^(CO|BTN|SB)$/.test(s.pos);
+    if (L === 'stations' && s.street && s.toCall <= 0 && e != null) {
+      const th = thresholds(s), d = draws(s.cards, s.board);
+      if (kind === 'raise' && e < th.vt - 0.05 && d.outs < 8) return { v: -1, note: TABLE_LESSONS[L].bad };
+      if (kind === 'raise' && e >= th.vt - 0.05) return { v: 1, note: TABLE_LESSONS[L].good };
+    }
+    if (L === 'nits' && !s.street) {
+      if (s.raises === 0 && late && kind === 'raise') return { v: 1, note: TABLE_LESSONS[L].good };
+      if (s.raises >= 1 && kind === 'call' && !chart('vs3betCall').has(s.k) && !chart('ipCallEarly').has(s.k)) return { v: -1, note: TABLE_LESSONS[L].bad };
+      if (s.raises >= 1 && kind === 'fold') return { v: 1, note: 'folded to a nit’s raise' };
+    }
+    if (L === 'maniacs' && s.street && s.toCall > 0 && e != null) {
+      const need = s.toCall / (s.pot + s.toCall);
+      if (kind === 'call' && e >= need - 0.08) return { v: 1, note: TABLE_LESSONS[L].good };
+      if (kind === 'fold' && e >= need) return { v: -1, note: TABLE_LESSONS[L].bad };
+    }
+    if (L === 'pros' && !s.street) {
+      if (s.raises >= 1 && kind === 'call' && /^(SB|BB)$/.test(s.pos) && !chart('bbCallEarly').has(s.k)) return { v: -1, note: TABLE_LESSONS[L].bad };
+      if (s.raises === 0 && kind === 'raise' && chart('rfi.' + s.pos) && chart('rfi.' + s.pos).has(s.k)) return { v: 1, note: TABLE_LESSONS[L].good };
+    }
+    return null;
+  }
+  function tableLessonLine() {
+    const F = FIELDS[opts.field || 'mixed']; if (!F || !F.lesson) return '';
+    const t = (stats.tableLesson || {})[F.lesson]; if (!t || !(t.good + t.bad)) return '';
+    return TABLE_LESSONS[F.lesson].title + ': ' + t.good + ' ✓ · ' + t.bad + ' ✗' + (t.last ? ' — last: ' + t.last : '');
+  }
   const BOTS = ['Viktor', 'Mia', 'Old Pete', 'Dougie', 'Zara', 'Kenji', 'Rosa', 'Sal', 'Priya', 'Tomasz', 'Gloria', 'Ade', 'Hugo', 'Lena'];
   function newGame(rng, field, n) {
     n = n || NSEATS;
@@ -314,7 +355,7 @@ const Trainer = (() => {
     const unit = T ? T.levels[T.level] : 1, deck = shuffled(rng);
     g.players.forEach((p, i) => {
       const out = !alive(i);
-      Object.assign(p, { stack: out ? 0 : (T ? T.chips[i] / unit : 100), cards: out ? [] : [deck.pop(), deck.pop()], bet: 0, total: 0, folded: out, out, allin: false, acted: false, actedAt: 0, rangeW: 1, rangeSet: null, post: [] });
+      Object.assign(p, { stack: out ? 0 : (T ? T.chips[i] / unit : (g.depth || 100)), cards: out ? [] : [deck.pop(), deck.pop()], bet: 0, total: 0, folded: out, out, allin: false, acted: false, actedAt: 0, rangeW: 1, rangeSet: null, post: [] });
     g.lastRaiser = -1;
     });
     g.startStacks = g.players.map(p => p.stack);
@@ -527,7 +568,7 @@ const Trainer = (() => {
     return others.length ? Math.min(me, Math.max.apply(null, others)) : me;
   };
   function shortSpot(g, i) {
-    if (!g.tour || g.street !== 0 || g.toAct !== i) return null;
+    if (g.street !== 0 || g.toAct !== i) return null;
     const S = effStack(g, i);
     const after = g.preOrder.slice(g.preOrder.indexOf(i) + 1).filter(j => !g.players[j].folded);
     if (g.raises === 0 && posOf(g, i) !== 'BB' && S <= PushFold.MAX_S && !g.log.some(l => l.kind === 'call')) return { type: 'shove', m: after.length, S, order: after };
@@ -616,6 +657,10 @@ const Trainer = (() => {
       return why(go ? { type: 'raise', to: p.bet + p.stack } : { type: 'fold' }, 'Short stack: ' + r1(sp.S) + ' big blinds, so it’s all-in or fold. ' + hw
         + (go ? ' is in the all-in range from this seat, with ' + sp.m + ' player' + (sp.m === 1 ? '' : 's') + ' still to act.' : ' is not in the all-in range from this seat, so it folds.')
         + (lean > 1 ? ' As a loose player it shoves more hands than the chart says.' : lean < 1 ? ' As a tight player it shoves fewer hands than the chart says.' : ''));
+    }
+    if (sp && sp.type === 'call' && !g.tour) {                                   // cash: chips only, from the equilibrium call charts
+      const ok = PushFold.inCall(k, Math.max(1, sp.mp), 1, Math.max(1, Math.min(PushFold.MAX_S, Math.round(sp.S)))) || (S.call >= 0.15 && P <= 0.12);
+      return why(ok ? { type: 'call' } : { type: 'fold' }, 'Facing an all-in of ' + r1(sp.S) + ' big blinds. ' + hw + (ok ? ' is strong enough to call it.' : ' isn’t strong enough to call an all-in — it folds.'));
     }
     if (sp && sp.type === 'call') {
       const tb = pfTable(g, i, []);
@@ -771,6 +816,7 @@ const Trainer = (() => {
         + (kc ? ', call with about another ' + share(kc) + ', and fold the rest.' : ' and fold everything else — from the small blind, calling leaves you stuck between the raiser and the big blind.');
       const rem = 'Remember: a raise from an early seat (UTG, UTG+1, LJ, HJ) usually means a strong hand, so continue with fewer hands against it than against a raise from the CO or button.';
       if (has(k3)) return Adv('raise', who === 'sb' ? [] : ['call'], lines(you, sit, 'So: ' + k + ' is strong enough to re-raise.', rem), who + grp);
+      if (kc && has(kc) && x.depth != null && x.depth <= 40 && !/^(77|88|99|TT|JJ|AQs|AKs|KQs|AQo|AJs)$/.test(k)) return Adv('fold', ['call'], lines(you, sit, 'Your stack: ' + r1(x.depth) + ' big blinds. Between 20 and 40, a call with a hand like ' + k + ' can’t be followed up — there isn’t enough behind to make the flop worth seeing.', 'So: fold ' + k + ' here; with a stronger hand, re-raise all-in rather than call.', 'Remember: from 20 to 40 big blinds play tighter — fewer calls of raises, more re-raise-or-fold.'), who + grp);
       if (kc && has(kc)) return Adv('call', [], lines(you, sit, 'So: ' + k + ' is good enough to call, but not to re-raise.', rem), who + grp);
       return Adv('fold', [], lines(you, sit, 'So: ' + k + ' isn’t good enough to continue — fold.', rem), who + grp);
     }
@@ -806,9 +852,8 @@ const Trainer = (() => {
   }
   function gradePre(s, kind) {
     const A = preflopAdvice(s.k, s), best = verbOf(A.best, s);
-    if (kind === A.best) return V('good', 'Best play: ' + best, A.why, 0);
-    if (A.alt.indexOf(kind) >= 0) return V('ok', 'Best play: ' + best + ' (yours was close)', A.why, 0);
-    return V('bad', 'Best play: ' + best, A.why, 0);
+    const G = kind === A.best ? V('good', 'Best play: ' + best, A.why, 0) : A.alt.indexOf(kind) >= 0 ? V('ok', 'Best play: ' + best + ' (yours was close)', A.why, 0) : V('bad', 'Best play: ' + best, A.why, 0);
+    G.view = A.view; G.k = s.k; return G;
   }
   function gradePost(s, kind, E) {
     const n = s.opps.length, e = E / 100, d = draws(s.cards, s.board);
@@ -881,8 +926,27 @@ const Trainer = (() => {
   // Short-stack tournament decisions are graded in prize money (ICM), with the chip answer beside it.
   // Returns null when the spot isn't push/fold, so the normal grading takes over.
   const usd = v => '$' + (Math.round(v * 100) / 100).toFixed(2);
+  // Cash games have no prize pool: a short stack is graded on chips, straight from the equilibrium charts.
+  function gradeShortCash(g, i, kind, to, sp) {
+    const p = g.players[i], k = cls(p.cards[0], p.cards[1]), pos = posOf(g, i);
+    const you = 'Your hand: ' + k + ', ' + strength(k);
+    if (sp.type === 'shove') {
+      const m = Math.max(1, sp.m), yes = PushFold.inPush(k, m, sp.S), pct = r1(PushFold.rangePct(PushFold.pushFreq(m, Math.max(1, Math.min(PushFold.MAX_S, Math.round(sp.S))))) * 100);
+      const why = lines(you, 'Your stack: ' + r1(sp.S) + ' big blinds — short enough that the best plays are all-in or fold. ' + sp.m + ' player' + (sp.m > 1 ? 's are' : ' is') + ' still to act after you.',
+        'The chart: from the ' + pos + ' at this stack, the equilibrium goes all-in with about ' + pct + '% of hands. ' + k + (yes ? ' is one of them.' : ' is not.'),
+        'So: ' + (yes ? 'go all-in.' : 'fold.'), 'Remember: with 20 big blinds or fewer, don’t make small raises — go all-in or fold. The fewer players behind you, the more hands you can shove.');
+      const act = kind === 'fold' ? 'fold' : (kind === 'raise' && to >= p.bet + p.stack - 0.01) ? 'shove' : kind === 'raise' ? 'small' : kind, best = yes ? 'shove' : 'fold';
+      if (act === 'small' || act === 'call') return V(sp.S <= 12 ? 'bad' : 'ok', 'Best play: ' + (best === 'shove' ? 'all-in' : 'fold') + ' — not a small raise', why + '\nWhy not a small raise: it puts a big part of your stack in and still lets them see a flop or shove over you.', 0);
+      return V(act === best ? 'good' : 'bad', 'Best play: ' + (best === 'shove' ? 'all-in' : 'fold'), why, 0);
+    }
+    const j = sp.mp, yes = PushFold.inCall(k, Math.max(1, j), 1, Math.max(1, Math.min(PushFold.MAX_S, Math.round(sp.S))));
+    const why = lines(you, 'Facing an all-in of ' + r1(sp.S) + ' big blinds.', 'The chart: against a shove from there, the equilibrium calls with ' + k + (yes ? '.' : ' only at a shorter stack — here it folds.'), 'So: ' + (yes ? 'call.' : 'fold.'), 'Remember: calling an all-in needs a stronger hand than making one.');
+    const act = kind === 'raise' ? 'call' : kind, best = yes ? 'call' : 'fold';
+    return V(act === best ? 'good' : 'bad', 'Best play: ' + best, why, 0);
+  }
   function gradeShort(g, i, kind, to) {
     const sp = shortSpot(g, i); if (!sp) return null;
+    if (!g.tour) return gradeShortCash(g, i, kind, to, sp);
     const p = g.players[i], k = cls(p.cards[0], p.cards[1]), pos = posOf(g, i), pool = g.tour.payouts.reduce((a, b) => a + b, 0);
     const who = s => (g.players[s].name || 'Seat ' + s) + ' (' + posOf(g, s) + ', ' + r1(g.players[s].stack + g.players[s].bet) + 'bb)';
     const you = 'Your hand: ' + k + ', ' + strength(k);
@@ -1076,6 +1140,7 @@ const Trainer = (() => {
     return out;
   }
   function shortDetail(G, i, sp) {
+    if (!G.tour) return [];                                                       // cash: no prize-money tables
     const p = G.players[i], k = cls(p.cards[0], p.cards[1]), name = s2 => (G.players[s2].name || 'Seat') + ' (' + posOf(G, s2) + ', ' + r1(G.players[s2].stack + G.players[s2].bet) + 'bb)';
     if (sp.type === 'shove') {
       const tb = pfTable(G, i, sp.order), r = PushFold.shoveSpot(tb.t, k), out = [];
@@ -1123,7 +1188,7 @@ const Trainer = (() => {
       facingAllIn: g.street === 0 && g.players.some((q, j) => j !== i && !q.folded && q.allin && q.bet >= g.curBet),
       limpers: g.street === 0 && g.raises === 0 ? g.log.filter(l => l.st === 0 && l.kind === 'call').length : 0,   // players who just called the big blind before you
       opps: g.players.map((q, j) => ({ q, j })).filter(o => o.j !== i && !o.q.folded).map(o => ({ width: o.q.rangeW, set: o.q.rangeSet, post: o.q.post.slice(), name: o.q.name, pos: posOf(g, o.j) })),
-      ip: inPosition(g, i), initiative: g.lastRaiser === i, spr: sprOf(g, i),
+      ip: inPosition(g, i), initiative: g.lastRaiser === i, spr: sprOf(g, i), depth: effStack(g, i),
     };
   }
   // A person at the table (you, or a friend) has no bot style.
@@ -1308,7 +1373,19 @@ const Trainer = (() => {
   const levelAiLine = () => 'THE STUDENT IS ' + ({ new: 'AN ABSOLUTE BEGINNER: explain every poker term you use in plain words, assume nothing, keep the numbers simple (e.g. "1 time in 4")',
     beginner: 'A BEGINNER: plain words, explain each poker term the first time you use it', improver: 'AN IMPROVING PLAYER: normal coaching language',
     advanced: 'AN ADVANCED PLAYER: be concise and use standard poker shorthand', pro: 'A PROFESSIONAL: the key numbers and the line, no basics' })[lvl()] + '.';
-  const saveStats = () => ls(STATS_KEY, JSON.stringify(stats)), saveOpts = () => ls(OPT_KEY, JSON.stringify(opts));
+  const saveStats = () => { stats.lastSeen = Date.now(); ls(STATS_KEY, JSON.stringify(stats)); }, saveOpts = () => ls(OPT_KEY, JSON.stringify(opts));
+  // A sitting ends when two hours pass without play (or on the Stats tab's button). The totals at that
+  // moment are kept, so each sitting is the difference between two snapshots — what moved this week.
+  const SIT_GAP = 2 * 3600000;
+  const snapOf = () => ({ when: Date.now(), hands: stats.hands, net: stats.net, good: stats.good, ok: stats.ok, bad: stats.bad, loss: stats.loss, street: JSON.parse(JSON.stringify(stats.byStreet || [])), drills: JSON.parse(JSON.stringify(stats.drills)) });
+  function closeSitting(force) {
+    const last = (stats.sessions || [])[(stats.sessions || []).length - 1];
+    const moved = !last || last.hands !== stats.hands || (last.good + last.ok + last.bad) !== (stats.good + stats.ok + stats.bad) || JSON.stringify(last.drills) !== JSON.stringify(stats.drills);
+    if (!moved) return false;
+    if (!force && !(stats.lastSeen && Date.now() - stats.lastSeen > SIT_GAP)) return false;
+    const snap = snapOf(); if (!force) snap.when = stats.lastSeen;
+    stats.sessions = (stats.sessions || []).concat([snap]).slice(-40); saveStats(); return true;
+  }
   let shown = false, tab = 'play', g = null, token = 0, decisions = [], chartView = 'rfi.UTG';
   const drill = {};
   const esc = s => escapeHtml(s);
@@ -1340,7 +1417,8 @@ const Trainer = (() => {
     if (opts.feedOpen) for (const d of f.children) d.classList.toggle('more', d.scrollHeight > d.clientHeight + 4);   // measurable only when shown
   }
   function tally(G) {
-    stats[G.v] = (stats[G.v] || 0) + 1; stats.loss = Math.round((stats.loss + (G.loss || 0)) * 100) / 100;
+    stats[G.v] = (stats[G.v] || 0) + 1;
+    if (G.street != null) { stats.byStreet = stats.byStreet || [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]]; const row = stats.byStreet[G.street] || (stats.byStreet[G.street] = [0, 0, 0]); row[G.v === 'good' ? 0 : G.v === 'ok' ? 1 : 2]++; } stats.loss = Math.round((stats.loss + (G.loss || 0)) * 100) / 100;
     if (G.usd) stats.lossUsd = Math.round(((stats.lossUsd || 0) + G.usd) * 100) / 100;
     if (G.v === 'bad') { const key = (G.street != null ? STREET[G.street] + ' · ' : '') + G.head; stats.leaks[key] = (stats.leaks[key] || 0) + 1; }
     saveStats();
@@ -1450,6 +1528,7 @@ const Trainer = (() => {
     roomSync(); chatterSchedule();
     if (g && g.tour && g.tour.done) return;
     if (!g) { g = newGame(Math.random, opts.field); g.players[0].name = room ? myName() : 'You'; }
+    if (!g.tour) g.depth = opts.depth || 100;
     if (room) seatJoiners();
     // what a web guest needs to rebuild this hand: the table just before the deal, and the shuffle's seed
     g.start = { button: g.button, handNo: g.handNo, lastBB: g.lastBB, prevAlive: g.prevAlive, tour: g.tour ? JSON.parse(JSON.stringify(g.tour)) : null };
@@ -1660,6 +1739,7 @@ const Trainer = (() => {
       const th = thresholds(s), d = draws(s.cards, s.board);
       if (E / 100 < th.vt && d.outs < 8) { stats.bluffOps = (stats.bluffOps || 0) + 1; if (kind === 'raise') stats.bluffs = (stats.bluffs || 0) + 1; }
     }
+    if (i === me && !autoOn()) { const sc = tableLessonScore(s, kind, E); if (sc) { stats.tableLesson = stats.tableLesson || {}; const F = FIELDS[opts.field || 'mixed'], t = stats.tableLesson[F.lesson] = stats.tableLesson[F.lesson] || { good: 0, bad: 0, last: '' }; if (sc.v > 0) t.good++; else t.bad++; t.last = sc.note; saveStats(); } }
     const short = !s.street && gradeShort(g, i, kind, to);
     const G = short || withSizing(s.street ? gradePost(s, kind, E) : gradePre(s, kind), s, kind, Math.max(L.minTo, Math.min(L.maxTo, half(Number(to) || 0))), E);
     const live = g.players.filter((q, j) => j !== i && !q.folded);
@@ -1718,12 +1798,12 @@ const Trainer = (() => {
     const key = handKey() + '/' + (g.acts || []).length;
     if (_advice && _advice.key === key) return _advice;
     const s = spot(g, me), L = legal(g, me), p = g.players[me], sp = !s.street && shortSpot(g, me);
-    let best, why, E = null;
+    let best, why, E = null, view = null;
     if (sp) {
       const go = gradeShort(g, me, sp.type === 'shove' ? 'raise' : 'call', p.bet + p.stack);
       best = go.v === 'good' ? (sp.type === 'shove' ? 'raise' : 'call') : 'fold'; why = go.why;
     } else if (!s.street) {
-      const A = preflopAdvice(s.k, s); best = A.best; why = A.why;
+      const A = preflopAdvice(s.k, s); best = A.best; why = A.why; view = A.view;
     } else {
       E = equityVsRanges(s.cards, s.board, s.opps, 2500, mulberry(seedOf(key)));   // the same draw for the same spot: the figure doesn't wander between views
       const kinds = s.toCall > 0 ? ['raise', 'call', 'fold'] : ['raise', 'check'];
@@ -1745,7 +1825,7 @@ const Trainer = (() => {
     const detail = detailFor(g, me, E);
     const pickd = list.find(o => o.best), m = pickd && /^(.+?) · (\S+)$/.exec(pickd.label);
     const doTxt = !pickd ? best : m ? 'Bet ' + m[2] + ' (' + m[1] + ')' : pickd.label;        // "¾ pot · 6bb" → "Bet 6bb (¾ pot)"; "Raise to 2.5bb"; "Call 3bb"; "Check"; "Fold"
-    _advice = { key, detail, do: doTxt, best: best === 'raise' ? (sp ? 'all-in' : verbOf('raise', s) + (adv ? ' (' + adv.rec + ')' : '')) : best, why: why + (adv && best === 'raise' ? '\nBet size: ' + adv.rec + '. ' + adv.why : ''), list };
+    _advice = { key, detail, do: doTxt, view, k: s.k, best: best === 'raise' ? (sp ? 'all-in' : verbOf('raise', s) + (adv ? ' (' + adv.rec + ')' : '')) : best, why: why + (adv && best === 'raise' ? '\nBet size: ' + adv.rec + '. ' + adv.why : ''), list };
     return _advice;
   }
   const Trainer_g = () => g, Trainer_me = () => me;
@@ -1781,7 +1861,7 @@ const Trainer = (() => {
   }
   function adviceHtml() {
     const a = adviceNow(); if (!a) return '';
-    return '<div class="tr-advice"><b>' + esc(plain('Your turn · ' + a.do)) + '</b><div class="tr-why">' + fmtWhy(a.why) + '</div>' + detailHtml(a.detail, true)
+    return '<div class="tr-advice"><b>' + esc(plain('Your turn · ' + a.do)) + '</b><div class="tr-why">' + fmtWhy(a.why) + '</div>' + chartMini(a.view, a.k) + detailHtml(a.detail, true)
       + '<div class="tr-optlist"><span class="tr-dim">Your options:</span>' + a.list.map(o => '<div class="tr-opt' + (o.best ? ' best' : '') + '"><b>' + esc(plain(o.label)) + '</b>' + (o.best ? '<span class="tr-tag">Recommended</span>' : '') + '<span>' + esc(plain(o.note)) + '</span></div>').join('') + '</div></div>';
   }
   function hint() {
@@ -1807,9 +1887,14 @@ const Trainer = (() => {
     if (!room || room.faceUp || (g && g.over)) return decisions;
     return decisions.filter(d => d.seat === seat).map(d => Object.assign({}, d, { Eact: null }));
   }
+  // The chart a preflop decision was graded against, with this hand marked — the same grid as the Charts tab.
+  function chartMini(view, k) {
+    if (!view || !VIEWS.some(v => v.id === view)) return '';
+    return '<details class="tr-chartmini" open><summary>The chart for this spot — your hand is outlined</summary>' + gridHtml(view, k || '') + legendHtml(view) + '</details>';
+  }
   function decHtml(d, toggle) {
     const who = d.seat === me ? 'You' : d.name;
-    return '<b>' + esc(plain(who + ' chose: ' + (d.verb || d.kind) + ' · ' + d.G.head)) + '</b><div class="tr-why">' + fmtWhy(d.seat === me ? d.G.why.split('\n').filter(l => !/^Your hand:/.test(l)).join('\n') : d.G.why) + '</div>' + detailHtml(d.detail, toggle) + '<div class="tr-why">'
+    return '<b>' + esc(plain(who + ' chose: ' + (d.verb || d.kind) + ' · ' + d.G.head)) + '</b><div class="tr-why">' + fmtWhy(d.seat === me ? d.G.why.split('\n').filter(l => !/^Your hand:/.test(l)).join('\n') : d.G.why) + '</div>' + (d.street === 0 ? chartMini(d.G.view, d.G.k) : '') + detailHtml(d.detail, toggle) + '<div class="tr-why">'
       + (d.Eact != null ? '\nAgainst the cards actually held: ' + d.Eact + '%.' : '')
       + (d.G.loss > 0 && d.kind !== d.G.head.replace(/^Best play: (\w+).*/, '$1') ? '\nWhat this choice costs: about ' + bbs(d.G.loss) + ' each time, on average.' : '')
       + (d.G.usd > 0 ? '\nWhat this choice costs: about ' + usd(d.G.usd) + ' in prize money, on average.' : '')
@@ -1852,7 +1937,7 @@ const Trainer = (() => {
       seats: g.players.map(q => ({ n: q.name, s: q.style || null, l: q.level || null })),
       start: g.start, seed: g.seed, acts: (g.acts || []).slice(),
       cards: cardsTxt(p.cards), k: cls(p.cards[0], p.cards[1]), pos: posOf(g, me), net: r2(p.stack - (g.startStacks ? g.startStacks[me] : 100)),
-      dec: decisions.map(d => ({ seat: d.seat, name: d.name, street: d.street, kind: d.kind, verb: d.verb, at: d.at, Eact: d.Eact, detail: d.detail || null, G: { v: d.G.v, head: d.G.head, why: d.G.why, loss: d.G.loss, usd: d.G.usd } })) };
+      dec: decisions.map(d => ({ seat: d.seat, name: d.name, street: d.street, kind: d.kind, verb: d.verb, at: d.at, Eact: d.Eact, detail: d.detail || null, G: { v: d.G.v, head: d.G.head, why: d.G.why, loss: d.G.loss, usd: d.G.usd, view: d.G.view || null, k: d.G.k || null } })) };
     history = [rec].concat(history.filter(h => h.id !== rec.id)).slice(0, 30);
     try { ls(HIST_KEY, JSON.stringify(history)); } catch (e) {}
   }
@@ -1864,6 +1949,37 @@ const Trainer = (() => {
     newHand(rg, mulberry(rec.seed));
     for (let k = 0; k < steps && k < rec.acts.length; k++) { const [i, kind, to] = rec.acts[k]; if (rg.over || rg.toAct !== i) break; act(rg, i, { type: kind, to }); }
     return rg;
+  }
+  // From a decision the grade marked wrong: replace that one action with the best play, let the bots
+  // play on (and the hero follow the trainer's advice thereafter), and show how it goes. Built only
+  // from the saved seed and actions, so it is the same deal every time.
+  function whatIf(rec, d) {
+    const rg = replayGame(rec, d.at), me0 = rec.me; if (rg.over || rg.toAct !== me0) return null;
+    const bestWord = (String(d.G.head).match(/^Best play: ([a-z0-9()\- ]+?)(?: —|$)/i) || [])[1] || '';
+    const s0 = spot(rg, me0), L0 = legal(rg, me0);
+    let kind = /fold/i.test(bestWord) ? 'fold' : /check/i.test(bestWord) ? 'check' : /call/i.test(bestWord) ? 'call' : 'raise', to = 0;
+    if (kind === 'raise') { const a0 = adviceForSpot(s0); to = /all-in/i.test(bestWord) ? L0.maxTo : (a0.to || L0.minTo); }
+    if (kind === 'check' && L0.toCall > 0) kind = 'call';
+    const seq = []; const name = j => j === me0 ? 'You' : rg.players[j].name;
+    const doit = (j, a) => { act(rg, j, a); const last = rg.log[rg.log.length - 1]; seq.push(name(j) + ' (' + last.pos + ') ' + last.txt); };
+    doit(me0, { type: kind, to });
+    const rng = mulberry((rec.seed >>> 0) + 7); let guard = 0;
+    while (!rg.over && guard++ < 200) {
+      const j = rg.toAct;
+      if (j === me0) { const a = adviceForSpot(spot(rg, me0)); const L = legal(rg, me0); let k2 = a.best === 'check' && L.toCall > 0 ? 'call' : a.best; doit(me0, { type: k2, to: a.to || L.minTo }); }
+      else doit(j, botDecide(rg, j, rng));
+    }
+    const net = r2(rg.players[me0].stack - (rec.start.tour ? rg.startStacks[me0] : (rg.startStacks ? rg.startStacks[me0] : 100)));
+    const result = rg.result ? rg.result.wins.map(w => name(w.i) + ' win' + (w.i === me0 ? '' : 's') + ' ' + bbs(r2(w.amt)) + (w.name ? ' — ' + w.name : '')).join('; ') : '';
+    return { kind, to, seq, result, net, board: rg.board.slice() };
+  }
+  function whatIfHtml(R, d) {
+    if (!d || d.seat !== R.rec.me || d.G.v === 'good' || !/^Best play: /.test(String(d.G.head))) return '';
+    if (R.whatIf && R.whatIf.at === d.at) {
+      const w = R.whatIf.res; if (!w) return '<div class="tr-dim">Couldn’t branch this one.</div>';
+      return '<div class="tr-explain tr-narrate"><b>What if: ' + esc(plain(d.G.head.replace(/^Best play: /, 'you had chosen to '))) + '</b><div class="tr-why">' + esc(plain(w.seq.join('\n'))) + (w.board.length ? '\nBoard: ' + esc(cardsTxt(w.board)) : '') + '\n' + esc(plain(w.result)) + '\n<b class="tr-lbl">That line finishes ' + (w.net >= 0 ? '+' : '') + esc(bbs(w.net)) + '</b> against ' + (R.rec.net >= 0 ? '+' : '') + esc(bbs(R.rec.net)) + ' for what you did. One run of the cards — the decision, not the result, is the lesson.</div></div>';
+    }
+    return '<div class="tr-row"><button class="ghost" data-act="hist:whatif">▶ What if I had ' + esc(plain(d.G.head.replace(/^Best play: /, ''))) + '?</button></div>';
   }
   function renderHands() {
     const m = $('trMain'), R = drill.replay;
@@ -1889,7 +2005,7 @@ const Trainer = (() => {
     const what = last ? who(last.i) + ' (' + last.pos + ') ' + last.txt : 'The deal: blinds posted, cards dealt.';
     const end = rg.over && R.step >= total ? '\n' + rg.result.wins.map(w => who(w.i) + ' win' + (w.i === rec.me ? '' : 's') + ' ' + bbs(r2(w.amt)) + (w.name ? ' — ' + w.name : '')).join('\n') : '';
     setPanel('<div class="tr-explain tr-narrate"><b>' + esc(plain(what)) + '</b>' + (end ? '<div class="tr-why">' + esc(plain(end)) + '</div>' : '')
-      + (d ? '<div class="tr-why"><b class="tr-lbl">' + esc(plain(who(d.seat) + ' chose: ' + (d.verb || d.kind) + ' · ' + d.G.head)) + '</b>\n' + fmtWhy(d.G.why) + '</div>' + detailHtml(d.detail, true) : '') + '</div>');
+      + (d ? '<div class="tr-why"><b class="tr-lbl">' + esc(plain(who(d.seat) + ' chose: ' + (d.verb || d.kind) + ' · ' + d.G.head)) + '</b>\n' + fmtWhy(d.G.why) + '</div>' + (d.street === 0 ? chartMini(d.G.view, d.G.k) : '') + detailHtml(d.detail, true) + whatIfHtml(R, d) : '') + '</div>');
     m.innerHTML = '<div class="tr-replay-head"><button class="ghost" data-act="hist:close">← All hands</button><b>Replay · hand #' + rec.handNo + '</b><span class="tr-dim">Step ' + R.step + ' of ' + total + ' · every card is shown</span></div>'
       + '<div class="tr-felt-wrap"><div class="tr-felt">' + felt + '</div></div>'
       + '<div class="tr-actions"><button class="ghost" data-act="hist:first"' + (R.step ? '' : ' disabled') + '>⏮ Start</button><button class="ghost" data-act="hist:prev"' + (R.step ? '' : ' disabled') + '>◀ Back</button>'
@@ -1911,7 +2027,7 @@ const Trainer = (() => {
       }
       if (!g.players[me].out) head += ': ' + (net >= 0 ? '+' : '') + bbs(net);
     } else if (me >= 0 && g.players[me]) {
-      const net = r2(g.players[me].stack - 100);
+      const net = r2(g.players[me].stack - (g.startStacks ? g.startStacks[me] : 100));
       if (counts) {
         stats.hands++; stats.net = r2(stats.net + net);
         if (mine.some(d => d.street === 0 && (d.kind === 'call' || d.kind === 'raise'))) stats.vpip++;
@@ -1921,10 +2037,22 @@ const Trainer = (() => {
       head += ': ' + (net >= 0 ? '+' : '') + bbs(net);
     }
     const res = g.result.wins.map(w => (w.i === me ? 'You win ' : g.players[w.i].name + ' wins ') + bbs(r2(w.amt)) + (w.name ? ' — ' + w.name : '')).join('\n');
+    // Was it the cards or the decisions? Both numbers are on the hand; this is the one sentence that joins them.
+    let verdict = '';
+    if (me >= 0 && g.players[me] && mine.length) {
+      const net = r2(g.players[me].stack - (g.startStacks ? g.startStacks[me] : 100)), bad = mine.filter(d => d.G.v === 'bad'), cost = r2(bad.reduce((a, d) => a + (d.G.loss || 0), 0));
+      const one = bad.length === 1 ? STREET[bad[0].street].toLowerCase() + ' (' + bad[0].G.head.replace(/^Best play: /, 'best was ') + ')' : bad.length + ' decisions';
+      if (!bad.length && net <= -3) verdict = 'You matched the best play on every decision and still lost ' + bbs(-net) + ' — that was the cards, not your play.';
+      else if (!bad.length && net >= 3) verdict = 'You matched the best play and won ' + bbs(net) + ' — the result and the decisions agree.';
+      else if (!bad.length) verdict = 'Every decision matched the best play; the hand was about even.';
+      else if (net > 0) verdict = 'You won ' + bbs(net) + ', but ' + (bad.length === 1 ? 'one decision differed from the best play on the ' + one : one + ' differed from the best play') + ' — the result flattered the play.';
+      else verdict = 'You lost ' + bbs(-net) + ', and ' + (bad.length === 1 ? 'one decision differed from the best play on the ' + one : one + ' differed from the best play') + (cost > 0 ? ' — those cost about ' + bbs(cost) + ' of it' : '') + '. The rest was the cards.';
+    }
+    const tl = tableLessonLine();
     const shows = room ? g.players.map((p, j) => p.cards ? (j === me ? 'You' : p.name) + ': ' + cardsTxt(p.cards) + (p.folded ? ' (folded)' : '') : '').filter(Boolean).join('\n') : '';
     const lines = decisions.filter(d => room || d.seat === me).map(d => '• ' + (room ? (d.seat === me ? 'You' : d.name) + ', ' : '') + STREET[d.street] + ': chose ' + (d.verb || d.kind) + ' · ' + d.G.head
       + (d.Eact != null ? ' (' + d.Eact + '% vs the actual cards)' : '')).join('\n');
-    feed('', '<b>' + esc(head) + '</b>' + esc(res) + (shows ? '\n\n' + esc(shows) : '') + (lines ? '\n\n' + esc(lines) : ''));
+    feed('', '<b>' + esc(head) + '</b>' + esc(res) + (verdict ? '\n\n<b class="tr-lbl">Cards or decisions?</b> ' + esc(plain(verdict)) : '') + (tl ? '\n<b class="tr-lbl">Table lesson:</b> ' + esc(tl) : '') + (shows ? '\n\n' + esc(shows) : '') + (lines ? '\n\n' + esc(lines) : ''));
     if (T) tourNews();
     if (me >= 0) dailyAdd('hands');
     saveHand();
@@ -3062,7 +3190,8 @@ const Trainer = (() => {
   }
   // Tournament settings, remembered between games.
   function fieldHtml() {
-    return '<label class="tr-dim tr-field">Opponents <select id="trField" style="width:auto">' + Object.keys(FIELDS).map(k => '<option value="' + k + '"' + ((opts.field || 'mixed') === k ? ' selected' : '') + '>' + FIELDS[k].name + '</option>').join('') + '</select></label>';
+    return '<label class="tr-dim tr-field">Opponents <select id="trField" style="width:auto">' + Object.keys(FIELDS).map(k => '<option value="' + k + '"' + ((opts.field || 'mixed') === k ? ' selected' : '') + '>' + FIELDS[k].name + '</option>').join('') + '</select></label>'
+      + '<label class="tr-dim tr-field" title="Everyone starts each cash hand with this stack. Under 40 big blinds the grading tightens; at 20 or fewer it is push/fold.">Stacks <select id="trDepth" style="width:auto">' + [[100, '100 big blinds (deep)'], [60, '60 big blinds'], [40, '40 big blinds'], [25, '25 big blinds (short)'], [15, '15 big blinds (push/fold)']].map(([v, n]) => '<option value="' + v + '"' + ((opts.depth || 100) === v ? ' selected' : '') + '>' + n + '</option>').join('') + '</select></label>';
   }
   function tourOptsHtml() {
     const t = opts.tour || {}, sel = (id, cur, list) => '<select id="' + id + '" style="width:auto">' + list.map(o => '<option value="' + o[0] + '"' + (String(o[0]) === String(cur) ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>';
@@ -3151,7 +3280,7 @@ const Trainer = (() => {
     const advice = myTurn ? storyHtml() + (opts.advise ? adviceHtml() : '') : '';
     m.innerHTML = roomBar() + tourBar() + ratingsBar() + '<div class="tr-felt-wrap"><div class="tr-felt">' + felt + '</div></div>'
       + '<div class="tr-actions">' + actions + '</div>'
-      + '<div class="tr-key">Key: ' + Array.from(new Set(g.players.map((q, j) => posOf(g, j)).filter(Boolean))).map(p => '<b>' + p + '</b> ' + POS_FULL[p] + (p === 'BTN' ? ' (the dealer)' : p === 'UTG' ? ' (first to act)' : '')).join(' · ') + ' · <b>bb</b> big blinds · <b>D</b> dealer button</div>'
+      + '<div class="tr-key">Key: ' + Array.from(new Set(g.players.map((q, j) => posOf(g, j)).filter(Boolean))).map(p => '<b>' + p + '</b> ' + POS_FULL[p] + (p === 'BTN' ? ' (the dealer)' : p === 'UTG' ? ' (first to act)' : '')).join(' · ') + ' · <b>bb</b> big blinds · <b>D</b> dealer button · keys: <b>F</b> fold <b>C</b> call/check <b>R</b> raise <b>H</b> ½ pot <b>P</b> pot <b>N</b> next</div>'
       + '<div class="tr-opts">' + optsRow + '<span>Hand #' + g.handNo + (T ? '' : ' · your session ' + (stats.net >= 0 ? '+' : '') + bbs(stats.net)) + '</span></div>';
     setPanel(primerHtml() + (autoOn() ? autoHtml() : autoClose) + (autoClose ? '' : watchHtml()) + panel + advice);
     renderSpot();
@@ -3568,6 +3697,7 @@ const Trainer = (() => {
       { id: 'reading', title: 'Reading opponents', practice: ['play', 'Play a hand'], body:
         '<p>Don’t guess one exact hand. Think about the <b>range</b> — all the hands a player could have — and narrow it with every action. A raise from UTG is a strong range; a call from the big blind is wide; a big bet on the river after calling twice is usually strong.</p>'
         + '<p>Every bot in this trainer has a style, shown on its seat. Adjust to it:</p>'
+        + '<p><b>Practise one adjustment at a time:</b> sit a table of one type and only that lesson is scored. <button class="ghost tr-mini" data-act="learn:table:stations">Calling stations</button> <button class="ghost tr-mini" data-act="learn:table:nits">Nits</button> <button class="ghost tr-mini" data-act="learn:table:maniacs">Maniacs</button> <button class="ghost tr-mini" data-act="learn:table:pros">Tight-aggressive pros</button></p>'
         + t([['Type', 'What they do', 'How to beat them'],
           ['Tight-aggressive', 'few hands, played hard', 'respect their raises; take the blinds when they fold'],
           ['Loose-aggressive', 'many hands, lots of betting', 'call down lighter; trap them with strong hands'],
@@ -3875,6 +4005,22 @@ const Trainer = (() => {
     if (key === 'icm') return '<div class="tr-dim">ICM spots: ' + a[1] + ' of ' + a[0] + ' correct' + (a[0] ? ' (' + Math.round(a[1] / a[0] * 100) + '%)' : '') + ' · prize equity given away ' + usd(a[2]) + '</div>';
     return '<div class="tr-dim">' + a[1] + ' of ' + a[0] + ' ' + what + (a[0] ? ' (' + Math.round(a[1] / a[0] * 100) + '%)' : '') + '</div>';
   }
+  // Each sitting as the difference between snapshots, newest first, plus the sitting in progress.
+  function sittingsHtml() {
+    const S = (stats.sessions || []).slice(), cur = snapOf(); cur.current = true;
+    const all = S.concat([cur]), rows = [];
+    for (let i = all.length - 1; i >= 0; i--) {
+      const a = all[i], b = i > 0 ? all[i - 1] : { hands: 0, net: 0, good: 0, ok: 0, bad: 0, loss: 0, street: [], drills: {} };
+      const hands = a.hands - b.hands, good = a.good - b.good, ok = a.ok - b.ok, bad = a.bad - b.bad, dec = good + ok + bad;
+      if (!hands && !dec && !a.current) continue;
+      const st = k => { const x = (a.street || [])[k] || [0, 0, 0], y = (b.street || [])[k] || [0, 0, 0]; const g2 = x[0] - y[0], o2 = x[1] - y[1], b2 = x[2] - y[2], n = g2 + o2 + b2; return n ? Math.round((g2 + o2) / n * 100) + '%' : '—'; };
+      const dr = (k, idx) => { const x = (a.drills || {})[k] || [], y = (b.drills || {})[k] || []; const n = (x[0] || 0) - (y[0] || 0), r = (x[idx] || 0) - (y[idx] || 0); return n ? r + '/' + n : '—'; };
+      rows.push('<tr' + (a.current ? ' class="me"' : '') + '><td>' + (a.current ? 'This sitting' : new Date(a.when).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })) + '</td><td>' + hands + '</td><td>' + (a.net - b.net >= 0 ? '+' : '') + r1(a.net - b.net) + '</td><td>' + (dec ? Math.round((good + ok) / dec * 100) + '%' : '—') + '</td><td>' + st(0) + '</td><td>' + [1, 2, 3].map(st).filter(x => x !== '—').join(' / ') + '</td><td>' + dr('pre', 1) + '</td><td>' + dr('pf', 1) + '</td></tr>');
+    }
+    if (!rows.length) return '';
+    return '<div class="tr-q"><b>Sittings</b> <span class="tr-dim">— each row is one sitting (a break of two hours ends one): hands, result in big blinds, how often your decisions matched the best play, preflop and after the flop, and the drills.</span></div>'
+      + '<div class="tr-tscroll"><table class="tr-icmt"><tr><th>When</th><th>Hands</th><th>Result</th><th>Matched</th><th>Preflop</th><th>Flop / turn / river</th><th>Preflop drill</th><th>Push/fold drill</th></tr>' + rows.join('') + '</table></div>';
+  }
   function renderStats() {
     const s = stats, dec = s.good + s.ok + s.bad, pc = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
     const tile = (l, v) => '<div class="tr-stat"><small>' + l + '</small><b>' + v + '</b></div>';
@@ -3896,7 +4042,8 @@ const Trainer = (() => {
       + tile('Return on buy-ins', s.tourCost ? Math.round(((s.tourPrize || 0) - s.tourCost) / s.tourCost * 100) + '%' : '—')
       + tile('Prize money those choices cost', usd((s.lossUsd || 0) + (D.icm[2] || 0)))
       + '</div><div class="tr-dim">A handful of tournaments is mostly luck; return on buy-ins means something after hundreds. How closely your choices match the best play is the number you control.</div>'
-      + '<div class="tr-row"><button class="ghost" data-act="stats:reset">Reset all stats</button></div></div>';
+      + sittingsHtml()
+      + '<div class="tr-row"><button class="ghost" data-act="stats:endsit">End this sitting now</button><button class="ghost" data-act="stats:reset">Reset all stats</button></div></div>';
   }
 
   function renderTabs() { $('trTabs').innerHTML = TABS.map(t => '<button class="ghost' + (t[0] === tab ? ' on' : '') + '" data-tab="' + t[0] + '">' + t[1] + '</button>').join(''); }
@@ -3928,7 +4075,8 @@ const Trainer = (() => {
       if (v === 'raiseTo') { const x = parseFloat(($('trTo') || {}).value); if (!isFinite(x)) return; return heroAct('raise', x); }
       heroAct(v);
     },
-    learn: v => { drill.ex = null; setTab(v); },
+    learn: v => {
+      if (v.indexOf('table:') === 0) { opts.field = v.slice(6); saveOpts(); freshTable(); setTab('play'); startHand(); toast(FIELDS[opts.field].name, 'green'); return; } drill.ex = null; setTab(v); },
     sleep: v => sleepAct(v),
     ui: v => {
       if (v === 'detail') { opts.detail = !opts.detail; saveOpts(); renderMain(); }
@@ -3955,6 +4103,7 @@ const Trainer = (() => {
       else if (v === 'prev') R.step = Math.max(0, R.step - 1);
       else if (v === 'next') R.step = Math.min(R.rec.acts.length, R.step + 1);
       else if (v === 'last') R.step = R.rec.acts.length;
+      else if (v === 'whatif') { const d = R.rec.dec.find(x => x.at === R.step - 1); if (d) { let res = null; try { res = whatIf(R.rec, d); } catch (e) { console.error('what if', e); } R.whatIf = { at: d.at, res }; } }
       renderHands();
     },
     tour: v => {
@@ -3988,6 +4137,7 @@ const Trainer = (() => {
     chart: v => { chartView = v; renderCharts(); },
     // two presses, no dialog (pages on claude.ai can't show confirm())
     stats: (v, b) => {
+      if (v === 'endsit') { toast(closeSitting(true) ? 'Sitting closed — it’s on the list' : 'Nothing new since the last sitting', ''); return renderStats(); }
       if (v !== 'reset') return;
       if (!drill.resetArmed) { drill.resetArmed = true; b.textContent = 'Press again to reset everything'; setTimeout(() => { drill.resetArmed = false; if (tab === 'stats') renderStats(); }, 4000); return; }
       drill.resetArmed = false; stats = DEF_STATS(); saveStats(); renderStats(); toast('Stats reset', '');
@@ -3996,6 +4146,7 @@ const Trainer = (() => {
 
   function open() {
     shown = true; $('trainer').classList.add('show'); $('trainer').setAttribute('aria-hidden', 'false');
+    closeSitting(false);                                                           // back after a break: the last sitting is closed off
     const nav = $('navTrainer'); if (nav) nav.classList.add('on');
     renderTabs(); renderMain();
     if (!room && g && !g.over && !isHuman(g.players[g.toAct])) step();   // solo: the bots pick up where they left off
@@ -4029,6 +4180,7 @@ const Trainer = (() => {
     const side = $('trSide'); if (side) side.onclick = onAct;    // Continue / Got it / the numbers switch live in the right-hand column
     $('trMain').onchange = (e) => {
       if (e.target && e.target.id === 'trField') { opts.field = e.target.value; saveOpts(); return; }
+      if (e.target && e.target.id === 'trDepth') { opts.depth = Number(e.target.value) || 100; saveOpts(); if (g && !g.tour) g.depth = opts.depth; return; }
       const r = pick(e, 'data-room');
       if (r && isHost()) { room.faceUp = !!r.checked; broadcast(); renderPlay(); feed('', '<b>Cards: ' + (room.faceUp ? 'face up for everyone' : 'own cards only') + '</b>' + (room.faceUp ? 'Every card and grade is shown as it happens.' : 'Everyone’s cards and grades are revealed when each hand ends.')); return; }
       const sel = pick(e, 'data-sel'); if (sel && sel.dataset.sel === 'level') return setLevel(sel.value);
@@ -4060,6 +4212,20 @@ const Trainer = (() => {
       if (b.dataset.opt === 'watch' || b.dataset.opt === 'stepBots') { renderPlay(); step(); }
       if (b.dataset.opt === 'speak') { if (opts.speak) { spokenLast = ''; said = new Set(); autoSpeak(); } else hush(); }
     };
+    // F fold · C call/check · R raise (the recommended size) · H half pot · P pot · N next — when no box is being typed in
+    document.addEventListener('keydown', (e) => {
+      if (!shown || e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target, typing = t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable);
+      if (typing) return;
+      const k = e.key.toLowerCase(), m = $('trMain'); if (!m) return;
+      const click = sel => { const b = m.querySelector(sel); if (b && !b.disabled) { e.preventDefault(); b.click(); return true; } return false; };
+      if (k === 'f') click('[data-act="play:fold"], [data-act="pre:fold"], [data-act="ex:fold"], [data-act="pf:fold"], [data-act="icm:fold"]');
+      else if (k === 'c') click('[data-act="play:call"], [data-act="play:check"], [data-act="pre:call"], [data-act="ex:call"], [data-act="ex:check"], [data-act="pf:call"], [data-act="icm:call"]');
+      else if (k === 'r') click('[data-act="play:raise"], [data-act="pre:raise"], [data-act="ex:raise"], [data-act="pf:shove"], [data-act="icm:shove"]');
+      else if (k === 'h') { const b = Array.from(m.querySelectorAll('[data-act="play:raise"]')).find(x => /^½ pot/.test(x.textContent)); if (b) { e.preventDefault(); b.click(); } }
+      else if (k === 'p') { const b = Array.from(m.querySelectorAll('[data-act="play:raise"]')).find(x => /^Pot ·/.test(x.textContent)); if (b) { e.preventDefault(); b.click(); } }
+      else if (k === 'n' || k === ' ') click('[data-act="play:continue"], [data-act="play:wnext"], [data-act="play:next"], [data-act="pre:next"], [data-act="pf:next"], [data-act="icm:next"], [data-act="odds:next"], [data-act="eq:next"], [data-act="outs:next"], [data-act="ex:next"], [data-act="hist:next"]');
+    });
     $('trMain').onkeydown = (e) => {
       if (e.key !== 'Enter') return;
       const ids = { trOddsIn: 'odds', trEqIn: 'eq', trOutsIn: 'outs' }, ns = e.target && ids[e.target.id];
@@ -4073,7 +4239,7 @@ const Trainer = (() => {
   function voiceChanged() { Promise.all([loadVoiceCfg(), loadLib()]).then(() => { if (HAS_LIB && !inbox) inboxOpen(); ttsFails = 0; stockVoices = null; chatterSchedule(); if (shown && tab === 'play') renderPlay(); }); }
   return {
     wire, open, close, voiceChanged, voiceLabel, sleepStory,
-    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech, storyHtml, levelWhy, COACH_LEVELS, rangeSetFor, candidates, thresholds, pickBest, inPosition, primerHtml, HAND_RANKS, rankOf, adviceForSpot, gradeForSpot, recordCoached, levelWhyFor: levelWhy, REMARKS, pickRemark, INVITE, VOICE_PARA, VOICE_PARA2, TALK_LEVELS, TALK_SYSTEM, setLevelForTest: v => { opts.level = v; } },
+    _engine: { parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech, storyHtml, levelWhy, COACH_LEVELS, rangeSetFor, tableLessonScore, FIELDS, whatIf, closeSitting, gradeShortCash, mulberry, setFieldForTest: v => { const p = opts.field; opts.field = v; return p; }, candidates, thresholds, pickBest, inPosition, primerHtml, HAND_RANKS, rankOf, adviceForSpot, gradeForSpot, recordCoached, levelWhyFor: levelWhy, REMARKS, pickRemark, INVITE, VOICE_PARA, VOICE_PARA2, TALK_LEVELS, TALK_SYSTEM, setLevelForTest: v => { opts.level = v; } },
   };
 })();
 
