@@ -113,16 +113,18 @@ function equityMC(heroStrs, boardStrs, opponents, trials, rng) {
   const used = new Set(hero.concat(board).map(c => c.r * 4 + c.s));
   if (used.size !== hero.length + board.length) return null;           // a duplicated card = a misread
   const deck = []; for (let r = 2; r <= 14; r++) for (let s = 0; s < 4; s++) if (!used.has(r * 4 + s)) deck.push({ r, s });
+  // each opponent's possible hands: every combo of the deck within their width (built once)
+  const lists = opponents.map(width => { const out = []; for (let i = 0; i < deck.length; i++) for (let j = i + 1; j < deck.length; j++) if (width >= 1 || _PK_PCT[handClass(deck[i], deck[j])] <= width) out.push([deck[i], deck[j]]); return out.length ? out : [[deck[0], deck[1]]]; });
   let won = 0;
   for (let t = 0; t < trials; t++) {
-    const d = deck.slice(); let n = d.length;
+    const d = deck.slice(); let n = d.length; const taken = new Set();
     const draw = () => { const i = Math.floor(rng() * n); const c = d[i]; d[i] = d[--n]; return c; };
     const opp = [];
-    for (const width of opponents) {
-      let a = draw(), b = draw();
-      if (width < 1) {   // rejection-sample a hand from the top `width` of starting hands
-        for (let tries = 0; tries < 40 && _PK_PCT[handClass(a, b)] > width; tries++) { d[n++] = a; d[n++] = b; a = draw(); b = draw(); }
-      }
+    for (let k = 0; k < opponents.length; k++) {
+      // a hand from the top `width` of starting hands, picked directly from the list (no giving up)
+      const list = lists[k]; let a = null, b = null;
+      for (let tries = 0; tries < 20 && !a; tries++) { const c = list[Math.floor(rng() * list.length)]; if (!taken.has(c[0].r * 4 + c[0].s) && !taken.has(c[1].r * 4 + c[1].s)) { a = c[0]; b = c[1]; } }
+      if (!a) { a = draw(); b = draw(); } else { taken.add(a.r * 4 + a.s); taken.add(b.r * 4 + b.s); for (let i = 0; i < n; i++) if ((d[i].r === a.r && d[i].s === a.s) || (d[i].r === b.r && d[i].s === b.s)) { d[i] = d[--n]; i--; } }
       opp.push([a, b]);
     }
     const full = board.slice(); while (full.length < 5) full.push(draw());
