@@ -2312,8 +2312,30 @@ const Trainer = (() => {
     } catch (e) { console.error('speech', e); }
   }
   let ttsAudio = null, ttsBusy = false, ttsGen = 0, ttsFails = 0;
+  // Phones only play sound that a tap started. The first tap anywhere plays a split second of silence
+  // through this one player, which unlocks it; every clip after that goes through the same player.
+  let voiceEl = null, voiceUnlocked = false;
+  const SILENT_WAV = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAIlYAAESsAAACABAAZGF0YQAAAAA=';
+  function unlockVoice() {
+    if (voiceUnlocked) return;
+    try {
+      if (!voiceEl) { voiceEl = new Audio(); voiceEl.setAttribute('playsinline', ''); voiceEl.preload = 'auto'; }
+      voiceEl.src = SILENT_WAV; const p = voiceEl.play(); if (p && p.then) p.then(() => { voiceUnlocked = true; }, () => {}); else voiceUnlocked = true;
+      if (CAN_SPEAK) { try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } catch (e) {} }   // and the phone's own voice
+    } catch (e) {}
+  }
+  // Play one clip to the end through the shared player (falls back to a fresh element on the desktop).
+  function playVoiceClip(mime, b64) {
+    return new Promise(res => {
+      const url = blobUrl(mime, b64), done = () => { URL.revokeObjectURL(url); res(); };
+      const a = voiceEl || new Audio(); if (!voiceEl) voiceEl = a;
+      a.onended = done; a.onerror = e => { console.error('voice clip', e); done(); };
+      a.src = url; const p = a.play(); if (p && p.catch) p.catch(e => { console.error('voice play', e); done(); });
+    });
+  }
   const blobUrl = (mime, b64) => { const bin = atob(b64), u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); return URL.createObjectURL(new Blob([u8], { type: mime })); };
   function ttsStop() { ttsGen++; ttsBusy = false; if (ttsAudio) { try { ttsAudio.pause(); } catch (e) {} ttsAudio = null; } }
+  const voiceClipPlaying = () => !!(voiceEl && !voiceEl.paused && !voiceEl.ended && voiceEl.src && voiceEl.src !== SILENT_WAV);
   async function ttsSay(parts) {
     const gen = ++ttsGen; ttsBusy = true;
     const calm = autoOn() && auto.calm, speed = calm ? 0.85 : (opts.speakRate || 1);
@@ -2324,7 +2346,7 @@ const Trainer = (() => {
         const r = await next; if (gen !== ttsGen) return;
         next = k + 1 < parts.length ? window.api.ttsSpeak({ text: parts[k + 1], speed, calm }) : null;
         if (!r) continue;
-        await new Promise(res => { const url = blobUrl(r.mime, r.b64), a = new Audio(url); ttsAudio = a; const done = () => { URL.revokeObjectURL(url); res(); }; a.onended = done; a.onerror = e => { console.error('voice clip', e); done(); }; a.play().catch(e => { console.error('voice play', e); done(); }); });
+        ttsAudio = voiceEl; await playVoiceClip(r.mime, r.b64);
         if (gen !== ttsGen) return;
       }
       ttsFails = 0;
@@ -2372,7 +2394,7 @@ const Trainer = (() => {
       for (let k = 0; k < parts.length; k++) {
         const r = await next; if (gen !== pcGen) return;
         next = k + 1 < parts.length ? pcAsk(parts[k + 1], speed, calm) : null;
-        await new Promise(res => { const url = blobUrl(r.mime, r.b64), a = new Audio(url); pcAudio = a; const done = () => { URL.revokeObjectURL(url); res(); }; a.onended = done; a.onerror = done; a.play().catch(done); });
+        pcAudio = voiceEl; await playVoiceClip(r.mime, r.b64);
         if (gen !== pcGen) return;
       }
     } catch (e) {
@@ -2381,7 +2403,7 @@ const Trainer = (() => {
       speakLocal(parts);
     } finally { if (gen === pcGen) { pcBusy = false; pcAudio = null; } }
   }
-  const voiceBusy = () => ttsBusy || pcBusy || (CAN_SPEAK && speechSynthesis.speaking);
+  const voiceBusy = () => ttsBusy || pcBusy || voiceClipPlaying() || (CAN_SPEAK && speechSynthesis.speaking);
   const voiceQueued = () => !ttsBusy && CAN_SPEAK && !speechSynthesis.speaking && speechSynthesis.pending;
   // The voice picker under the table: this PC's voices (and a Try button), or the ElevenLabs voice from ⚙ Settings.
   function voiceSelHtml() {
@@ -3891,6 +3913,7 @@ const Trainer = (() => {
     const nav = $('navTrainer'); if (nav) nav.classList.remove('on');
   }
   function wire() {
+    ['pointerdown', 'touchend', 'click', 'keydown'].forEach(ev => document.addEventListener(ev, unlockVoice, { capture: true, passive: true }));
     // Anything that breaks shows up on the page, so a phone can tell us what went wrong.
     const showErr = msg => { try { let b = document.getElementById('paErr'); if (!b) { b = document.createElement('div'); b.id = 'paErr'; b.style.cssText = 'position:fixed;left:8px;right:8px;top:8px;z-index:99999;background:#7f1d1d;color:#fff;padding:10px 12px;border-radius:10px;font:13px/1.4 system-ui;white-space:pre-wrap;word-break:break-word;box-shadow:0 10px 30px rgba(0,0,0,.5)'; b.onclick = () => b.remove(); document.body.appendChild(b); } b.textContent = '⚠ Poker Angel hit a problem (tap to hide): ' + msg + ' — ' + navigator.userAgent.slice(0, 120); } catch (e) {} };
     window.addEventListener('error', e => showErr((e.message || 'error') + (e.filename ? ' @ ' + e.filename.split('/').pop() + ':' + e.lineno : '')));
