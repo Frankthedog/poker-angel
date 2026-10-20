@@ -1517,24 +1517,24 @@ const Trainer = (() => {
     if (auto.done) {
       const mins = Math.max(1, Math.round((Date.now() - auto.t0) / 60000)), n = auto.hands + (g.over ? 1 : 0);
       // (this block is also what autoClose keeps once the Angel has stopped)
-      body = '<div class="tr-why"><b class="tr-lbl">That’s the end of this session.</b> ' + n + ' hand' + (n === 1 ? '' : 's') + ' in ' + mins + ' minute' + (mins === 1 ? '' : 's') + '.</div>'
+      body = '<div class="tr-why"><b class="tr-lbl">That’s the end of this session.</b><span class="tr-nosay"> ' + n + ' hand' + (n === 1 ? '' : 's') + ' in ' + mins + ' minute' + (mins === 1 ? '' : 's') + '.</span></div>'
         + (auto.lessons.length ? '<div class="tr-why"><b class="tr-lbl">What to keep from tonight:</b>\n' + esc(plain(auto.lessons.slice(-6).map((l, k) => (k + 1) + '. ' + l).join('\n'))) + '</div>' : '')
         + '<div class="tr-why">' + (auto.calm ? 'Sleep well. The seat is yours whenever you come back.' : 'The seat is yours again.') + '</div>';
     } else if (g.over && g.result) {
       body = '<div class="tr-why"><b class="tr-lbl">Hand over.</b> ' + esc(plain(g.result.wins.map(x => (x.i === me ? 'The Angel wins ' : g.players[x.i].name + ' wins ') + bbs(r2(x.amt)) + (x.name ? ' with ' + x.name : '')).join(' · ')))
         + (g.result.showdown ? '.' : ' — everyone else folded.') + '</div>'
         + (auto.lesson && auto.lessonHand === g.handNo ? '<div class="tr-why"><b class="tr-lbl">Lesson from this hand:</b> ' + esc(plain(auto.lesson)) + '</div>' : '')
-        + '<div class="tr-dim">Next hand in a moment…</div>';
+        + '<div class="tr-dim tr-nosay">Next hand in a moment…</div>';
     } else if (w) {
       const p = g.players[w.i], who = w.i === me ? 'The Angel' : p.name;
       body = '<div class="tr-why"><b class="tr-lbl">' + esc(plain(who + ' (' + posOf(g, w.i) + ') ' + w.txt)) + '</b> <span class="tr-dim">' + esc(cardsTxt(p.cards) + (w.i === me ? '' : ' · ' + botLabel(p))) + '</span></div>'
         + (w.i === me ? '<div class="tr-why">' + fmtWhy(w.why) + '</div>'
           : '<div class="tr-why">' + esc(plain(levelWhy(w.why))) + (STYLE_HOW[p.style] ? '\n<i class="tr-dim">How a ' + esc(styleName(p.style)) + ' player plays: ' + esc(STYLE_HOW[p.style]) + '</i>' : '') + '</div>');
-    } else body = (auto.intro ? '<div class="tr-why">' + (auto.calm ? 'Settle in. ' : '') + 'The Angel plays hand after hand in your seat, every card face up, and explains each move — its own and the bots’ — with the numbers and the reasons.' + (auto.endAt ? ' It will play for ' + opts.autoMins + ' minutes and then close quietly.' : '') + '</div>' : '')
+    } else body = (auto.intro ? '<div class="tr-why tr-nosay">' + (auto.calm ? 'Settle in. ' : '') + 'The Angel plays hand after hand in your seat, every card face up, and explains each move — its own and the bots’ — with the numbers and the reasons.' + (auto.endAt ? ' It will play for ' + opts.autoMins + ' minutes and then close quietly.' : '') + '</div>' : '')
       + '<div class="tr-why">' + esc(plain('New hand. The Angel is in the ' + posOf(g, me) + ' with ' + (hero && hero.cards && hero.cards.length ? cardsTxt(hero.cards) : 'no cards yet') + '.')) + '</div>';
     const sp = v => '<button class="' + (auto.speed === v ? 'primary' : 'ghost') + ' tr-mini" data-act="play:autospeed" data-v="' + v + '">' + v + '</button>';
     if (auto.done) return '<div class="tr-advice tr-auto"><b>' + (auto.calm ? '🌙' : '🎬') + ' The Angel’s session</b>' + body + '</div>';
-    return '<div class="tr-advice tr-auto"><b>' + (auto.calm ? '🌙' : '🎬') + ' The Angel plays · hand #' + g.handNo + (auto.endAt && !auto.done ? ' · ' + minsLeft() + ' min left' : '') + '</b>' + body
+    return '<div class="tr-advice tr-auto"><b class="tr-nosay">' + (auto.calm ? '🌙' : '🎬') + ' The Angel plays · hand #' + g.handNo + (auto.endAt && !auto.done ? ' · ' + minsLeft() + ' min left' : '') + '</b>' + body
       + '<div class="tr-row tr-nosay"><button class="ghost tr-mini" data-act="play:autostop">⏹ Stop — I’ll play</button><span class="tr-dim">Pace:</span>' + sp('slow') + sp('normal') + sp('fast') + '</div>'
       + '<div class="tr-row tr-nosay">' + autoOptsHtml() + '</div></div>'
       + '<div class="tr-nosay">' + storyHtml(g, me, true) + '</div>';
@@ -2276,7 +2276,7 @@ const Trainer = (() => {
     try { const c = await window.api.getConfig(); voiceCfg = { engine: c.ttsEngine || 'local', hasTtsKey: !!c.hasTtsKey, ttsVoice: c.ttsVoice || '', ttsVoiceName: c.ttsVoiceName || '' }; } catch (e) {}
   }
   const HAS_TTS = () => !!(window.api && window.api.ttsSpeak) && ((voiceCfg.engine === 'eleven' && voiceCfg.hasTtsKey) || voiceCfg.engine === 'own') && !!voiceCfg.ttsVoice;
-  const CAN_TALK = () => CAN_SPEAK || HAS_TTS();
+  const CAN_TALK = () => CAN_SPEAK || HAS_TTS() || pcVoiceOn();
   const localVoices = () => { try { return CAN_SPEAK ? speechSynthesis.getVoices() : []; } catch (e) { return []; } };
   function pickVoice() {
     const vs = localVoices();
@@ -2338,21 +2338,67 @@ const Trainer = (() => {
   function speak(text) {
     if (!CAN_TALK()) return;
     const t = forSpeech(text); if (!t) return;
-    ttsStop(); if (CAN_SPEAK) try { speechSynthesis.cancel(); } catch (e) {}
+    ttsStop(); pcStop(); if (CAN_SPEAK) try { speechSynthesis.cancel(); } catch (e) {}
     if (chatterGain) { try { chatterGain.gain.setTargetAtTime(0.35, actx.currentTime, 0.1); chatterGain.gain.setTargetAtTime(1, actx.currentTime + 2.5, 1.5); } catch (e) {} }
-    if (HAS_TTS() && ttsFails < 3) ttsSay(passages(t, voiceCfg.engine === 'own' ? 170 : 500)); else speakLocal(passages(t, 220));   // the own engine: a sentence or two at a time, so the first words come quickly while the rest is made
+    if (HAS_TTS() && ttsFails < 3) ttsSay(passages(t, voiceCfg.engine === 'own' ? 170 : 500)); else if (pcVoiceOn()) pcSay(passages(t, 170)); else speakLocal(passages(t, 220));   // the own engine: a sentence or two at a time, so the first words come quickly while the rest is made
   }
-  function hush() { ttsStop(); if (CAN_SPEAK) try { speechSynthesis.cancel(); } catch (e) {} }
-  const voiceBusy = () => ttsBusy || (CAN_SPEAK && speechSynthesis.speaking);
+  function hush() { ttsStop(); pcStop(); if (CAN_SPEAK) try { speechSynthesis.cancel(); } catch (e) {} }
+  // ---- a voice on your PC, used from the web page (phone) ----
+  // The page sends each passage to the PC over the phone link (sendTo); the PC's engine makes the clip
+  // (cached there) and sends it back; the page plays it. Needs Poker Angel open on the PC.
+  let pcBusy = false, pcGen = 0, pcReqId = 0, pcAudio = null;
+  const pcWaiting = new Map();
+  const pcLinked = () => !!(sendTo && sendTo.conn && sendTo.conn.open);
+  const pcVoiceOn = () => !HAS_LIB && !!opts.pcVoice && pcLinked();
+  function pcAsk(text, speed, calm) {
+    return new Promise((res, rej) => {
+      const id = ++pcReqId;
+      const timer = setTimeout(() => { pcWaiting.delete(id); rej(new Error('The PC didn’t answer in time')); }, 90000);
+      pcWaiting.set(id, { res, rej, timer });
+      try { sendTo.conn.send({ t: 'tts', id, voice: opts.pcVoice, text, speed, calm: !!calm }); } catch (e) { clearTimeout(timer); pcWaiting.delete(id); rej(e); }
+    });
+  }
+  function pcClip(m) {
+    const w = pcWaiting.get(m.id); if (!w) return;
+    clearTimeout(w.timer); pcWaiting.delete(m.id);
+    if (m.t === 'ttsclip' && typeof m.b64 === 'string') w.res({ mime: m.mime || 'audio/wav', b64: m.b64 }); else w.rej(new Error(m.error || 'the PC could not make that clip'));
+  }
+  function pcStop() { pcGen++; pcBusy = false; if (pcAudio) { try { pcAudio.pause(); } catch (e) {} pcAudio = null; } }
+  async function pcSay(parts) {
+    const gen = ++pcGen; pcBusy = true;
+    const calm = autoOn() && auto.calm, speed = calm ? 0.85 : (opts.speakRate || 1);
+    try {
+      let next = pcAsk(parts[0], speed, calm);
+      for (let k = 0; k < parts.length; k++) {
+        const r = await next; if (gen !== pcGen) return;
+        next = k + 1 < parts.length ? pcAsk(parts[k + 1], speed, calm) : null;
+        await new Promise(res => { const url = blobUrl(r.mime, r.b64), a = new Audio(url); pcAudio = a; const done = () => { URL.revokeObjectURL(url); res(); }; a.onended = done; a.onerror = done; a.play().catch(done); });
+        if (gen !== pcGen) return;
+      }
+    } catch (e) {
+      if (gen !== pcGen) return;
+      toast('Your PC’s voice: ' + cleanErr(e) + ' — using this phone’s voice for now', 'red');
+      speakLocal(parts);
+    } finally { if (gen === pcGen) { pcBusy = false; pcAudio = null; } }
+  }
+  const voiceBusy = () => ttsBusy || pcBusy || (CAN_SPEAK && speechSynthesis.speaking);
   const voiceQueued = () => !ttsBusy && CAN_SPEAK && !speechSynthesis.speaking && speechSynthesis.pending;
   // The voice picker under the table: this PC's voices (and a Try button), or the ElevenLabs voice from ⚙ Settings.
   function voiceSelHtml() {
     if (!CAN_TALK()) return '';
-    if (HAS_TTS()) return '<span class="tr-voice">🎙 Voice: <b>' + esc(voiceCfg.ttsVoiceName || 'ElevenLabs') + '</b> <button class="ghost tr-mini" data-act="ui:voicetry">🔈 Try</button><span class="tr-dim">(change in ⚙ Settings → Voice)</span></span>';
+    const mine = voiceLib.filter(v => v.voiceId);
+    if (HAS_TTS() || (mine.length && voiceCfg.engine === 'own')) {
+      const cur = voiceCfg.ttsVoiceName || '';
+      return '<span class="tr-voice">🎙 Voice: <select data-sel="coachVoice"><optgroup label="Your recorded voices">' + mine.map(v => '<option value="' + esc(v.name) + '"' + (v.name === cur ? ' selected' : '') + '>' + esc(v.name) + '</option>').join('') + '</optgroup>'
+        + (voiceCfg.engine === 'eleven' && cur && !mine.some(v => v.name === cur) ? '<option value="' + esc(cur) + '" selected>' + esc(cur) + '</option>' : '')
+        + '<option value="__pc">this PC’s built-in voice</option></select><button class="ghost tr-mini" data-act="ui:voicetry">🔈 Try</button></span>';
+    }
     const vs = localVoices(), cur = pickVoice();
     const en = vs.filter(v => /^en/i.test(v.lang)), rest = vs.filter(v => !/^en/i.test(v.lang));
     const opt = v => '<option value="' + esc(v.name) + '"' + (cur && v.name === cur.name ? ' selected' : '') + '>' + esc(v.name.replace(/^Microsoft /, '')) + '</option>';
-    return '<span class="tr-voice">🔈 Voice: <select data-sel="voice">' + en.map(opt).join('') + (rest.length ? '<optgroup label="Other languages">' + rest.map(opt).join('') + '</optgroup>' : '') + '</select>'
+    const pcVoices = (!HAS_LIB && sendTo && sendTo.voices) ? sendTo.voices : [];
+    const pcGroup = pcVoices.length ? '<optgroup label="' + (pcLinked() ? 'On your PC (linked)' : 'On your PC (not linked now)') + '">' + pcVoices.map(n => '<option value="__pcv:' + esc(n) + '"' + (opts.pcVoice === n ? ' selected' : '') + '>' + esc(n) + '</option>').join('') + '</optgroup>' : '';
+    return '<span class="tr-voice">🔈 Voice: <select data-sel="voice">' + pcGroup + (mine.length ? '<optgroup label="Your recorded voices">' + mine.map(v => '<option value="__own:' + esc(v.name) + '">' + esc(v.name) + '</option>').join('') + '</optgroup><optgroup label="This PC’s built-in voices">' : '') + en.map(opt).join('') + (mine.length ? '</optgroup>' : '') + (rest.length ? '<optgroup label="Other languages">' + rest.map(opt).join('') + '</optgroup>' : '') + '</select>'
       + '<select data-sel="speakRate" title="Reading speed">' + [[0.8, 'slower'], [0.9, 'a little slower'], [1, 'normal speed'], [1.1, 'a little faster'], [1.25, 'faster']].map(([r, n]) => '<option value="' + r + '"' + ((opts.speakRate || 1) === r ? ' selected' : '') + '>' + n + '</option>').join('') + '</select>'
       + '<button class="ghost tr-mini" data-act="ui:voicetry">🔈 Try</button>'
       + (window.api && window.api.ttsSpeak ? '<span class="tr-dim">Want a natural voice, or a family member’s own? ⚙ Settings → Voice.</span>' : '') + '</span>';
@@ -2520,6 +2566,13 @@ const Trainer = (() => {
       conn.on('open', () => { try { conn.send({ t: 'welcome', bots: BOTS.slice(), voices: voiceLib.map(v => v.name), engine: voiceCfg.engine }); } catch (e) {} });
       conn.on('data', async m => {
         if (!m || typeof m !== 'object') return;
+        if (m.t === 'tts') {                                      // the phone wants a line spoken in one of this PC's voices
+          const id = libVoiceId(String(m.voice || '')), text = String(m.text || '').slice(0, 600);
+          if (!id || !HAS_TTS() || !text) { try { conn.send({ t: 'ttsfail', id: m.id, error: !id ? 'no such voice on the PC' : 'the PC’s voice engine is off' }); } catch (e) {} return; }
+          try { const clip = await window.api.ttsSay({ voiceId: id, text, speed: Math.max(0.7, Math.min(1.3, Number(m.speed) || 1)) }); conn.send({ t: 'ttsclip', id: m.id, mime: clip.mime, b64: clip.b64 }); }
+          catch (e) { try { conn.send({ t: 'ttsfail', id: m.id, error: cleanErr(e) }); } catch (x) {} }
+          return;
+        }
         if (m.t === 'use') {                                      // a voice already on the PC, given a job from the phone
           const name = String(m.name || '').slice(0, 16); if (!voiceLib.some(v => v.name === name)) return;
           const what = await applyVoiceUse(name, String(m.use || '')); try { conn.send({ t: 'ok', name, cloned: true, what }); } catch (e) {} renderMain(); return;
@@ -2563,7 +2616,8 @@ const Trainer = (() => {
       const conn = peer.connect(PEER_PREFIX + 'v-' + code.toLowerCase(), { reliable: true });
       conn.on('open', () => { clearTimeout(giveUp); if (sendTo && sendTo.peer === peer) { sendTo.conn = conn; sendTo.status = ''; renderMain(); } });
       conn.on('data', m => { if (!m || !sendTo) return;
-        if (m.t === 'welcome') { sendTo.bots = m.bots || []; sendTo.voices = m.voices || []; sendTo.status = ''; renderMain(); return; }
+        if (m.t === 'welcome') { sendTo.bots = m.bots || []; sendTo.voices = m.voices || []; sendTo.status = ''; if (!opts.pcVoice && sendTo.voices.length && !opts.voice) { opts.pcVoice = sendTo.voices[0]; saveOpts(); } renderMain(); return; }
+        if (m.t === 'ttsclip' || m.t === 'ttsfail') return pcClip(m);
         if (m.t === 'ok') { clearTimeout(sendTo.ackTimer); sendTo.sentAt = 0; sendTo.status = '✅ ' + m.name + ' is on the PC' + (m.cloned ? ' and ready' : '') + (m.what ? ' — ' + m.what : '') + '. Record the next one, or you’re done.'; if (!sendTo.voices.includes(m.name)) sendTo.voices.push(m.name); myVoice = null; try { localStorage.removeItem(TVOICE_KEY); } catch (e) {} }
         else if (m.t === 'fail') sendTo.status = '❌ ' + m.error; renderMain(); });
       conn.on('close', () => { if (sendTo && sendTo.peer === peer) { sendTo.status = 'The connection to the PC closed — tap Connect again.'; sendTo.conn = null; renderMain(); } });
@@ -3842,6 +3896,7 @@ const Trainer = (() => {
     window.addEventListener('error', e => showErr((e.message || 'error') + (e.filename ? ' @ ' + e.filename.split('/').pop() + ':' + e.lineno : '')));
     window.addEventListener('unhandledrejection', e => showErr('promise: ' + (e.reason && (e.reason.message || e.reason) || 'rejected')));
     loadLib().then(() => { if (HAS_LIB && typeof Peer === 'function') inboxOpen(); if (shown && tab === 'play' && !g) renderPlay(); });
+    if (!HAS_LIB && typeof Peer === 'function' && ls(PCCODE_KEY) && !sendTo) setTimeout(() => sendConnect(ls(PCCODE_KEY)), 800);   // the phone links back to the PC on its own
     document.addEventListener('click', () => { if (actx && actx.state === 'suspended') actx.resume().catch(() => {}); }, true);
     loadVoiceCfg();
     if (CAN_SPEAK) { try { speechSynthesis.onvoiceschanged = () => { if (shown && tab === 'play') renderPlay(); }; } catch (e) {} }
@@ -3859,7 +3914,17 @@ const Trainer = (() => {
       const r = pick(e, 'data-room');
       if (r && isHost()) { room.faceUp = !!r.checked; broadcast(); renderPlay(); feed('', '<b>Cards: ' + (room.faceUp ? 'face up for everyone' : 'own cards only') + '</b>' + (room.faceUp ? 'Every card and grade is shown as it happens.' : 'Everyone’s cards and grades are revealed when each hand ends.')); return; }
       const sel = pick(e, 'data-sel'); if (sel && sel.dataset.sel === 'level') return setLevel(sel.value);
-      if (sel && sel.dataset.sel === 'voice') { opts.voice = sel.value; saveOpts(); speak(VOICE_SAMPLE); return; }
+      if (sel && sel.dataset.sel === 'voice') {
+        if (/^__pcv:/.test(sel.value)) { opts.pcVoice = sel.value.slice(6); saveOpts(); if (pcLinked()) speak(VOICE_SAMPLE); else toast('Open Poker Angel on the PC and tap Connect under 🎙 Voices to use ' + opts.pcVoice, 'red'); return; }
+        opts.pcVoice = ''; saveOpts();
+        if (/^__own:/.test(sel.value)) { const name = sel.value.slice(6), id = libVoiceId(name); if (id && window.api && window.api.setTts) { window.api.setTts({ engine: 'own', voice: id, voiceName: name }).then(() => { voiceChanged(); setTimeout(() => speak(VOICE_SAMPLE), 400); }); } return; }
+        opts.voice = sel.value; saveOpts(); speak(VOICE_SAMPLE); return;
+      }
+      if (sel && sel.dataset.sel === 'coachVoice') {
+        if (sel.value === '__pc') { window.api.setTts({ engine: 'local' }).then(() => { voiceChanged(); setTimeout(() => speak(VOICE_SAMPLE), 400); }); return; }
+        const id = libVoiceId(sel.value); if (id) window.api.setTts({ engine: voiceCfg.engine === 'local' ? 'own' : voiceCfg.engine, voice: id, voiceName: sel.value }).then(() => { voiceChanged(); setTimeout(() => speak(VOICE_SAMPLE), 400); });
+        return;
+      }
       if (sel && sel.dataset.sel === 'speakRate') { opts.speakRate = parseFloat(sel.value) || 1; saveOpts(); speak(VOICE_SAMPLE); return; }
       if (sel && /^(chatterVol|chatterOften|roomVol)$/.test(sel.dataset.sel)) { opts[sel.dataset.sel] = sel.value; saveOpts(); roomSync(); chatterSchedule(); return; }
       if (sel && sel.dataset.sel === 'talk') { opts.talk = sel.value; opts.chatter = sel.value !== 'off'; saveOpts(); audioCtx(); chatterSchedule(); renderPlay(); return; }
