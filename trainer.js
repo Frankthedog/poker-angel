@@ -3265,7 +3265,7 @@ const Trainer = (() => {
     }
     const T = g.tour, felt = feltHtml();
     let actions;
-    const extras = (HAS_AI ? '<button class="ghost" data-act="play:ai">🤖 Ask the AI coach about this hand</button>' : '') + '<button class="ghost" data-act="play:copy">📋 Copy hand history</button>';
+    const extras = (HAS_AI && !(room && room.plain) ? '<button class="ghost" data-act="play:ai">🤖 Ask the AI coach about this hand</button>' : '') + '<button class="ghost" data-act="play:copy">📋 Copy hand history</button>';
     const pend = pauseOn() && !autoOn() && !autoClose ? myPending() : null;
     const panel = pend ? '<div class="tr-explain">' + decHtml(pend, true)
       + (g.over ? '' : '<div class="tr-row">' + (holding() ? '<span class="tr-dim">Press Continue ▶ under the table when you’re ready.</span>' : '<button class="ghost" data-act="play:continue">Got it</button>') + '</div>') + '</div>' : '';
