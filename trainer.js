@@ -1691,6 +1691,7 @@ const Trainer = (() => {
     if (auto.done) return '<div class="tr-advice tr-auto"><b>' + (auto.calm ? '🌙' : '🎬') + ' The Angel’s session</b>' + body + '</div>';
     return '<div class="tr-advice tr-auto"><b class="tr-nosay">' + (auto.calm ? '🌙' : '🎬') + ' The Angel plays · hand #' + g.handNo + (auto.endAt && !auto.done ? ' · ' + minsLeft() + ' min left' : '') + '</b>' + body
       + '<div class="tr-row tr-nosay"><button class="ghost tr-mini" data-act="play:autostop">⏹ Stop — I’ll play</button><span class="tr-dim">Pace:</span>' + sp('slow') + sp('normal') + sp('fast') + '</div>'
+      + '<div class="tr-row tr-nosay"><span class="tr-dim">' + esc(voiceStatus()) + '</span><button class="ghost tr-mini" data-act="ui:voicetry">🔈 Test the voice</button></div>'
       + '<div class="tr-row tr-nosay">' + autoOptsHtml() + '</div></div>'
       + '<div class="tr-nosay">' + storyHtml(g, me, true) + '</div>';
   }
@@ -2645,7 +2646,7 @@ const Trainer = (() => {
     return '<span class="tr-voice">🔈 Voice: <select data-sel="voice">' + pcGroup + (mine.length ? '<optgroup label="Your recorded voices">' + mine.map(v => '<option value="__own:' + esc(v.name) + '">' + esc(v.name) + '</option>').join('') + '</optgroup><optgroup label="This PC’s built-in voices">' : '') + en.map(opt).join('') + (mine.length ? '</optgroup>' : '') + (rest.length ? '<optgroup label="Other languages">' + rest.map(opt).join('') + '</optgroup>' : '') + '</select>'
       + '<select data-sel="speakRate" title="Reading speed">' + [[0.8, 'slower'], [0.9, 'a little slower'], [1, 'normal speed'], [1.1, 'a little faster'], [1.25, 'faster']].map(([r, n]) => '<option value="' + r + '"' + ((opts.speakRate || 1) === r ? ' selected' : '') + '>' + n + '</option>').join('') + '</select>'
       + '<button class="ghost tr-mini" data-act="ui:voicetry">🔈 Try</button>'
-      + (window.api && window.api.ttsSpeak ? '<span class="tr-dim">Want a natural voice, or a family member’s own? ⚙ Settings → Voice.</span>' : '') + '</span>';
+      + (window.api && window.api.ttsSpeak ? '<span class="tr-dim">Want a natural voice, or a family member’s own? ⚙ Settings → Voice.</span>' : '<span class="tr-dim">' + esc(voiceStatus()) + '</span>') + '</span>';
   }
   // ---- 🎙 voices: record, name, assign ----
   // Several recordings, each with a name (Mum, Grandad, Dave…). On the desktop they live on this PC
@@ -3121,6 +3122,11 @@ const Trainer = (() => {
   }
   const INVITE = code => 'Come and play poker with me on Poker Angel!\nTable code: ' + code + '\n1. Open Poker Angel → 🎓 Trainer (or, on a phone, https://frankthedog.github.io/poker-angel/).\n2. Before you join, press 🎙 My table voice and read the short paragraph — it gives your character your own voice at the table. A phone’s microphone is best.\n3. Type ' + code + ' under Play with friends and press Join a table.';
 
+  function voiceStatus() {
+    if (HAS_TTS()) return '🎙 Voice: ' + (voiceCfg.ttsVoiceName || 'your engine') + ' (this PC’s engine)';
+    if (!HAS_LIB && opts.pcVoice) return pcLinked() ? '🎙 Voice: ' + opts.pcVoice + ', made on your PC' : '⚠ ' + opts.pcVoice + ' lives on your PC and this page isn’t linked to it — open Poker Angel on the PC (the page links by itself), or pick a phone voice. Using this device’s voice meanwhile.';
+    const v = pickVoice(); return CAN_SPEAK ? ('🔈 Voice: this device’s ' + (v ? v.name.replace(/^Microsoft /, '').replace(/ - English.*$/, '') : 'built-in voice') + (!localVoices().length ? ' (none loaded yet — tap Test)' : '')) : '⚠ This device has no speech voice.';
+  }
   const VOICE_SAMPLE = 'This is how I’ll read the coaching. You have Ace King suited on the button. The pot is 9 big blinds and it costs 3 to call, so you need to win 1 time in 4. Raise to 10 big blinds.';
   // What the right-hand column says, minus buttons, drop-downs and stat tables.
   function panelText() {
