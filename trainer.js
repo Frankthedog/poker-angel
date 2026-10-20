@@ -1691,7 +1691,7 @@ const Trainer = (() => {
     if (auto.done) return '<div class="tr-advice tr-auto"><b>' + (auto.calm ? '🌙' : '🎬') + ' The Angel’s session</b>' + body + '</div>';
     return '<div class="tr-advice tr-auto"><b class="tr-nosay">' + (auto.calm ? '🌙' : '🎬') + ' The Angel plays · hand #' + g.handNo + (auto.endAt && !auto.done ? ' · ' + minsLeft() + ' min left' : '') + '</b>' + body
       + '<div class="tr-row tr-nosay"><button class="ghost tr-mini" data-act="play:autostop">⏹ Stop — I’ll play</button><span class="tr-dim">Pace:</span>' + sp('slow') + sp('normal') + sp('fast') + '</div>'
-      + '<div class="tr-row tr-nosay"><span class="tr-dim">' + esc(voiceStatus()) + '</span><button class="ghost tr-mini" data-act="ui:voicetry">🔈 Test the voice</button></div>'
+
       + '<div class="tr-row tr-nosay">' + autoOptsHtml() + '</div></div>'
       + '<div class="tr-nosay">' + storyHtml(g, me, true) + '</div>';
   }
@@ -2594,7 +2594,7 @@ const Trainer = (() => {
   let pcBusy = false, pcGen = 0, pcReqId = 0, pcAudio = null;
   const pcWaiting = new Map();
   const pcLinked = () => !!(sendTo && sendTo.conn && sendTo.conn.open);
-  const pcVoiceOn = () => !HAS_LIB && !!opts.pcVoice && pcLinked();
+  const pcVoiceOn = () => !HAS_LIB && !!opts.pcVoiceEnabled && !!opts.pcVoice && pcLinked();   // off for now: the phone speaks with its own voice
   function pcAsk(text, speed, calm) {
     return new Promise((res, rej) => {
       const id = ++pcReqId;
@@ -2641,12 +2641,12 @@ const Trainer = (() => {
     const vs = localVoices(), cur = pickVoice();
     const en = vs.filter(v => /^en/i.test(v.lang)), rest = vs.filter(v => !/^en/i.test(v.lang));
     const opt = v => '<option value="' + esc(v.name) + '"' + (cur && v.name === cur.name ? ' selected' : '') + '>' + esc(v.name.replace(/^Microsoft /, '')) + '</option>';
-    const pcVoices = (!HAS_LIB && sendTo && sendTo.voices) ? sendTo.voices : [];
+    const pcVoices = (!HAS_LIB && opts.pcVoiceEnabled && sendTo && sendTo.voices) ? sendTo.voices : [];
     const pcGroup = pcVoices.length ? '<optgroup label="' + (pcLinked() ? 'On your PC (linked)' : 'On your PC (not linked now)') + '">' + pcVoices.map(n => '<option value="__pcv:' + esc(n) + '"' + (opts.pcVoice === n ? ' selected' : '') + '>' + esc(n) + '</option>').join('') + '</optgroup>' : '';
     return '<span class="tr-voice">🔈 Voice: <select data-sel="voice">' + pcGroup + (mine.length ? '<optgroup label="Your recorded voices">' + mine.map(v => '<option value="__own:' + esc(v.name) + '">' + esc(v.name) + '</option>').join('') + '</optgroup><optgroup label="This PC’s built-in voices">' : '') + en.map(opt).join('') + (mine.length ? '</optgroup>' : '') + (rest.length ? '<optgroup label="Other languages">' + rest.map(opt).join('') + '</optgroup>' : '') + '</select>'
       + '<select data-sel="speakRate" title="Reading speed">' + [[0.8, 'slower'], [0.9, 'a little slower'], [1, 'normal speed'], [1.1, 'a little faster'], [1.25, 'faster']].map(([r, n]) => '<option value="' + r + '"' + ((opts.speakRate || 1) === r ? ' selected' : '') + '>' + n + '</option>').join('') + '</select>'
       + '<button class="ghost tr-mini" data-act="ui:voicetry">🔈 Try</button>'
-      + (window.api && window.api.ttsSpeak ? '<span class="tr-dim">Want a natural voice, or a family member’s own? ⚙ Settings → Voice.</span>' : '<span class="tr-dim">' + esc(voiceStatus()) + '</span>') + '</span>';
+      + (window.api && window.api.ttsSpeak ? '<span class="tr-dim">Want a natural voice, or a family member’s own? ⚙ Settings → Voice.</span>' : '') + '</span>';
   }
   // ---- 🎙 voices: record, name, assign ----
   // Several recordings, each with a name (Mum, Grandad, Dave…). On the desktop they live on this PC
@@ -2861,7 +2861,7 @@ const Trainer = (() => {
       const conn = peer.connect(PEER_PREFIX + 'v-' + code.toLowerCase(), { reliable: true });
       conn.on('open', () => { clearTimeout(giveUp); if (sendTo && sendTo.peer === peer) { sendTo.conn = conn; sendTo.status = ''; renderMain(); } });
       conn.on('data', m => { if (!m || !sendTo) return;
-        if (m.t === 'welcome') { sendTo.bots = m.bots || []; sendTo.voices = m.voices || []; sendTo.status = ''; if (!opts.pcVoice && sendTo.voices.length && !opts.voice) { opts.pcVoice = sendTo.voices[0]; saveOpts(); } renderMain(); return; }
+        if (m.t === 'welcome') { sendTo.bots = m.bots || []; sendTo.voices = m.voices || []; sendTo.status = ''; renderMain(); return; }
         if (m.t === 'ttsclip' || m.t === 'ttsfail') return pcClip(m);
         if (m.t === 'ok') { clearTimeout(sendTo.ackTimer); sendTo.sentAt = 0; sendTo.status = '✅ ' + m.name + ' is on the PC' + (m.cloned ? ' and ready' : '') + (m.what ? ' — ' + m.what : '') + '. Record the next one, or you’re done.'; if (!sendTo.voices.includes(m.name)) sendTo.voices.push(m.name); myVoice = null; try { localStorage.removeItem(TVOICE_KEY); } catch (e) {} }
         else if (m.t === 'fail') sendTo.status = '❌ ' + m.error; renderMain(); });
@@ -3124,7 +3124,7 @@ const Trainer = (() => {
 
   function voiceStatus() {
     if (HAS_TTS()) return '🎙 Voice: ' + (voiceCfg.ttsVoiceName || 'your engine') + ' (this PC’s engine)';
-    if (!HAS_LIB && opts.pcVoice) return pcLinked() ? '🎙 Voice: ' + opts.pcVoice + ', made on your PC' : '⚠ ' + opts.pcVoice + ' lives on your PC and this page isn’t linked to it — open Poker Angel on the PC (the page links by itself), or pick a phone voice. Using this device’s voice meanwhile.';
+    if (!HAS_LIB && opts.pcVoiceEnabled && opts.pcVoice) return pcLinked() ? '🎙 Voice: ' + opts.pcVoice + ', made on your PC' : '⚠ ' + opts.pcVoice + ' lives on your PC and this page isn’t linked to it — open Poker Angel on the PC (the page links by itself), or pick a phone voice. Using this device’s voice meanwhile.';
     const v = pickVoice(); return CAN_SPEAK ? ('🔈 Voice: this device’s ' + (v ? v.name.replace(/^Microsoft /, '').replace(/ - English.*$/, '') : 'built-in voice') + (!localVoices().length ? ' (none loaded yet — tap Test)' : '')) : '⚠ This device has no speech voice.';
   }
   const VOICE_SAMPLE = 'This is how I’ll read the coaching. You have Ace King suited on the button. The pot is 9 big blinds and it costs 3 to call, so you need to win 1 time in 4. Raise to 10 big blinds.';
