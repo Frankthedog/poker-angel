@@ -1528,13 +1528,11 @@ const Trainer = (() => {
     if (isGuest()) return;
     roomSync(); chatterSchedule();
     if (g && g.tour && g.tour.done) return;
+    if (room && room.plain && 1 + room.conns.size < 2) { toast('Waiting for a friend to join — deal once someone is here', ''); if (tab === 'play') renderPlay(); return; }   // just a game: two people minimum
     if (!g) { g = newGame(Math.random, opts.field); g.players[0].name = room ? myName() : 'You'; }
     if (!g.tour) g.depth = opts.depth || 100;
     if (room) seatJoiners();
-    if (room && room.plain) {                                    // just a game: nobody is dealt in but the people here
-      g.empty = g.players.map(p => !isHuman(p) || !!p.gone);
-      if (g.empty.filter(e => !e).length < 2) { toast('Waiting for a friend to join — deal once someone is here', ''); if (tab === 'play') renderPlay(); return; }
-    } else g.empty = null;
+    g.empty = room && room.plain ? g.players.map(p => !isHuman(p) || !!p.gone) : null;   // just a game: nobody is dealt in but the people here
     // what a web guest needs to rebuild this hand: the table just before the deal, and the shuffle's seed
     g.start = { button: g.button, handNo: g.handNo, lastBB: g.lastBB, prevAlive: g.prevAlive, tour: g.tour ? JSON.parse(JSON.stringify(g.tour)) : null, empty: g.empty || null };
     g.seed = Math.floor(Math.random() * 4294967296) >>> 0;
