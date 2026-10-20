@@ -338,7 +338,7 @@ const Trainer = (() => {
   // big blinds at the current level; busted seats sit out; the big blind also posts a 1bb ante.
   // Amounts inside a hand are always in big blinds.
   function newHand(g, rng) {
-    const T = g.tour, alive = i => !T || T.chips[i] > 0;
+    const T = g.tour, alive = i => !(g.empty && g.empty[i]) && (!T || T.chips[i] > 0);   // g.empty: chairs nobody sits in (a plain friends' game)
     g.handNo++;
     const NS = g.players.length;
     let b = g.button; for (let k = 0; k < NS; k++) { b = (b + 1) % NS; if (alive(b)) break; }
@@ -354,8 +354,8 @@ const Trainer = (() => {
     g.preOrder = n === 2 ? order.slice() : order.slice(3).concat(order.slice(0, 3));   // who acts first before the flop
     const unit = T ? T.levels[T.level] : 1, deck = shuffled(rng);
     g.players.forEach((p, i) => {
-      const out = !alive(i);
-      Object.assign(p, { stack: out ? 0 : (T ? T.chips[i] / unit : (g.depth || 100)), cards: out ? [] : [deck.pop(), deck.pop()], bet: 0, total: 0, folded: out, out, allin: false, acted: false, actedAt: 0, rangeW: 1, rangeSet: null, post: [] });
+      const out = !alive(i), empty = !!(g.empty && g.empty[i]);
+      Object.assign(p, { empty, stack: out ? 0 : (T ? T.chips[i] / unit : (g.depth || 100)), cards: out ? [] : [deck.pop(), deck.pop()], bet: 0, total: 0, folded: out, out, allin: false, acted: false, actedAt: 0, rangeW: 1, rangeSet: null, post: [] });
     g.lastRaiser = -1;
     });
     g.startStacks = g.players.map(p => p.stack);
@@ -1531,8 +1531,12 @@ const Trainer = (() => {
     if (!g) { g = newGame(Math.random, opts.field); g.players[0].name = room ? myName() : 'You'; }
     if (!g.tour) g.depth = opts.depth || 100;
     if (room) seatJoiners();
+    if (room && room.plain) {                                    // just a game: nobody is dealt in but the people here
+      g.empty = g.players.map(p => !isHuman(p) || !!p.gone);
+      if (g.empty.filter(e => !e).length < 2) { toast('Waiting for a friend to join — deal once someone is here', ''); if (tab === 'play') renderPlay(); return; }
+    } else g.empty = null;
     // what a web guest needs to rebuild this hand: the table just before the deal, and the shuffle's seed
-    g.start = { button: g.button, handNo: g.handNo, lastBB: g.lastBB, prevAlive: g.prevAlive, tour: g.tour ? JSON.parse(JSON.stringify(g.tour)) : null };
+    g.start = { button: g.button, handNo: g.handNo, lastBB: g.lastBB, prevAlive: g.prevAlive, tour: g.tour ? JSON.parse(JSON.stringify(g.tour)) : null, empty: g.empty || null };
     g.seed = Math.floor(Math.random() * 4294967296) >>> 0;
     newHand(g, mulberry(g.seed)); decisions = []; token++; autoClose = '';
     onHandState();
@@ -1542,7 +1546,7 @@ const Trainer = (() => {
   }
   // One bot action, with its reason kept for watching (g.watchLog).
   function botMove() {
-    const i = g.toAct, st = g.street, d = botDecide(g, i, Math.random);
+    const i = g.toAct, st = g.street, d = g.players[i].gone ? { type: legal(g, i).toCall > 0 ? 'fold' : 'check', why: 'Left the table.' } : botDecide(g, i, Math.random);
     act(g, i, d);
     if (g.players[i].allin && !g.over) talkEvent('allin', { seat: i });
     const last = g.log.filter(l => l.i === i && l.kind !== 'post').pop();
@@ -1736,6 +1740,7 @@ const Trainer = (() => {
     if (kind === 'raise' && (!L.canRaise || !(to > g.curBet))) kind = 'call';
     if (kind === 'call' && L.toCall === 0) kind = 'check';
     if (kind === 'check' && L.toCall > 0) kind = 'fold';
+    if (room && room.plain) { act(g, i, { type: kind, to }); if (g.players[i].allin && !g.over) talkEvent('allin', { seat: i }); return; }   // just a game: no grade, no record
     const E = s.street ? equityVsRanges(s.cards, s.board, s.opps, 2500, mulberry(seedOf(handKey() + '/' + (g.acts || []).length))) : null;
     if (i === me && s.street && s.toCall <= 0 && E != null) {                   // a bluffing opportunity: nothing much, nobody has bet
       const th = thresholds(s), d = draws(s.cards, s.board);
@@ -2017,7 +2022,7 @@ const Trainer = (() => {
     summarized = handKey();
     if (g.result && g.result.wins.reduce((a, w) => a + w.amt, 0) >= 60) talkEvent('bigpot');
     const mine = decisions.filter(d => d.seat === me), T = g.tour;
-    const counts = !autoOn() && !mine.some(d => d.auto);          // a hand the Angel played isn't part of your session
+    const counts = !autoOn() && !mine.some(d => d.auto) && !(room && room.plain);   // a hand the Angel played, or a plain friends' game, isn't part of your session
     let head = 'Hand #' + g.handNo + ' over';
     if (me >= 0 && g.players[me] && T) {
       const net = r2(g.players[me].stack - g.startStacks[me]);
@@ -2159,7 +2164,7 @@ const Trainer = (() => {
     if (noPeer() || room) return;
     const code = newCode();
     const peer = new Peer(PEER_PREFIX + code.toLowerCase(), PEER_OPTS);
-    autoStop(true); room = { role: 'host', code, peer, conns: new Map(), faceUp: !!opts.faceUp, pw: String(($('trPw') || {}).value || '').trim().slice(0, 24), status: 'Opening the table…', voices: {} }; ratings = {};
+    autoStop(true); room = { role: 'host', code, peer, conns: new Map(), plain: !!opts.plain, faceUp: !!opts.faceUp && !opts.plain, pw: String(($('trPw') || {}).value || '').trim().slice(0, 24), status: 'Opening the table…', voices: {} }; ratings = {};
     if (HAS_TTS() && opts.myVoiceName && libVoiceId(opts.myVoiceName)) room.voices[myName()] = libVoiceId(opts.myVoiceName);
     me = 0; g = null; decisions = []; token++; renderPlay();       // any solo hand in progress is abandoned
     peer.on('open', () => { if (room && room.peer === peer) { room.status = ''; renderPlay(); feed('', '<b>👥 Table ' + code + ' is open</b>Send your friends the code. They open Poker Angel → 🎓 Trainer → Join, and type it in.'); } });
@@ -2215,9 +2220,9 @@ const Trainer = (() => {
   function guestLeft(conn) {
     if (!isHost() || !room.conns.has(conn)) return;
     const c = room.conns.get(conn); room.conns.delete(conn);
-    feed('', '<b>' + esc(c.name) + ' left the table</b>' + (c.pending ? '' : 'A bot plays their seat.'));
+    feed('', '<b>' + esc(c.name) + ' left the table</b>' + (c.pending ? '' : room.plain ? 'Their hand is folded and their chair is empty from the next hand.' : 'A bot plays their seat.'));
     if (!c.pending && g) {
-      const p = g.players[c.seat]; p.style = 'tag'; p.name = c.name + ' (bot)';
+      const p = g.players[c.seat]; p.style = 'tag'; p.name = room.plain ? c.name : c.name + ' (bot)'; if (room.plain) p.gone = true;
       if (!g.over && g.toAct === c.seat) step();
     }
     broadcast(); if (tab === 'play') renderPlay();
@@ -2242,7 +2247,7 @@ const Trainer = (() => {
     for (const [conn, c] of room.conns) {
       if (!conn.open) continue;
       const seat = c.pending ? -1 : c.seat;
-      try { conn.send({ t: 'state', g: publicState(seat), decisions: g ? visibleDecisions(seat) : [], seat, faceUp: room.faceUp, code: room.code, players }); } catch (e) {}
+      try { conn.send({ t: 'state', g: publicState(seat), decisions: g ? visibleDecisions(seat) : [], seat, faceUp: room.faceUp, plain: !!room.plain, code: room.code, players }); } catch (e) {}
     }
   }
 
@@ -2276,7 +2281,7 @@ const Trainer = (() => {
     if (m.t === 'wrongpw') { toast('That table has a password — type it next to the code', 'red'); leaveRoom(true); return; }
     if (m.t === 'say') return onSay(m);
     if (m.t !== 'state') return;
-    Object.assign(room, { faceUp: !!m.faceUp, players: m.players || [] });
+    Object.assign(room, { faceUp: !!m.faceUp, plain: !!m.plain, players: m.players || [] });
     me = typeof m.seat === 'number' ? m.seat : -1;
     const fresh = g && m.g && m.g.handNo !== g.handNo;
     g = m.g || null; decisions = m.decisions || [];
@@ -2320,7 +2325,7 @@ const Trainer = (() => {
     const R = await roomCap().catch(() => null);
     if (!R) { toast('Playing with friends works when this page is open on claude.ai and you’re signed in', 'red'); return; }
     const code = newCode();
-    autoStop(true); room = { role: 'host', web: true, code, conns: new Map(), faceUp: true, status: 'Opening the table…' }; ratings = {};
+    autoStop(true); room = { role: 'host', web: true, code, conns: new Map(), plain: !!opts.plain, faceUp: !opts.plain, status: 'Opening the table…' }; ratings = {};
     me = 0; g = null; decisions = []; token++; renderPlay();
     try { room.r = await R.join(roomName(code)); } catch (e) { room = null; toast('Couldn’t open a table (' + (e && e.code || 'error') + ')', 'red'); renderPlay(); return; }
     room.status = '';
@@ -2354,7 +2359,7 @@ const Trainer = (() => {
     }) : null;
     const lobby = tablePlayers().map(p => p.name);
     const pending = Array.from(room.conns.entries()).filter(([, c]) => c.pending).map(([k]) => k);
-    const rec = { v: 1, code: room.code, faceUp: room.faceUp, lobby, pending, seats,
+    const rec = { v: 1, code: room.code, faceUp: room.faceUp, plain: !!room.plain, lobby, pending, seats,
       g: g ? { gid: g.gid, handNo: g.handNo, seed: g.seed, start: g.start, acts: g.acts || [] } : null };
     room.r.presence({ pa: rec }).catch(e => { if (e && e.code === 'invalid_argument') console.error('table record too large', e.message); });
   }
@@ -2388,7 +2393,7 @@ const Trainer = (() => {
   // what this page already has; a new hand, or anything that doesn't line up, starts the hand afresh.
   function applyRecord(rec) {
     room.status = '';
-    room.faceUp = !!rec.faceUp; room.players = (rec.lobby || []).map(n => ({ name: String(n) }));
+    room.faceUp = !!rec.faceUp; room.plain = !!rec.plain; room.players = (rec.lobby || []).map(n => ({ name: String(n) }));
     const mp = myPeer();
     const seat = rec.seats ? rec.seats.findIndex(s => s && s.peer === mp) : -1;
     if (!rec.g || !rec.seats) { g = null; decisions = []; me = seat; if (tab === 'play' && shown) renderPlay(); else renderSpot(); return; }
@@ -2398,7 +2403,7 @@ const Trainer = (() => {
       g = { players: rec.seats.map(s => ({ name: String(s.n || 'Seat'), style: s.s && STYLES[s.s] ? s.s : null, level: s.l && SKILL[s.l] ? s.l : null })), button: R.start.button, handNo: R.start.handNo, gid: R.gid };
       if (R.start.tour) g.tour = JSON.parse(JSON.stringify(R.start.tour));
       g.lastBB = R.start.lastBB; g.prevAlive = R.start.prevAlive;
-      g.start = R.start; g.seed = R.seed;
+      g.start = R.start; g.seed = R.seed; g.empty = R.start.empty || null;
       newHand(g, mulberry(R.seed)); decisions = [];
     }
     me = seat;
@@ -2464,6 +2469,7 @@ const Trainer = (() => {
   }
   function seatHtml(i) {
     const p = g.players[i], v = view(i), [x, y] = layout().seat[v], turn = !g.over && g.toAct === i, mine = i === me, T = g.tour;
+    if (p.empty) return '<div class="tr-seat out empty" style="left:' + x + '%;top:' + y + '%"><div class="tr-cards"></div><div class="tr-plate"><b>Empty seat</b></div></div>';
     if (p.out) {
       return '<div class="tr-seat out" style="left:' + x + '%;top:' + y + '%"><div class="tr-cards"></div><div class="tr-plate"><b>' + esc(mine && room ? 'You' : p.name) + '</b>'
         + '<span class="stk">Out — ' + ordinal(T.place[i]) + (T.prize[i] ? ' · $' + T.prize[i] : '') + '</span></div></div>';
@@ -2476,7 +2482,7 @@ const Trainer = (() => {
     let bubble = '';
     if (won) bubble = '<span class="tr-bubble win">wins ' + bbs(r2(won.amt)) + (won.name ? ' · ' + esc(won.name) : '') + '</span>';
     else { const last = g.log.filter(l => l.i === i && l.kind !== 'post' && (l.st === g.street || g.over)).pop(); if (last) bubble = '<span class="tr-bubble">' + esc(last.txt) + '</span>'; }
-    const tag = isHuman(p) ? (room ? '<small class="tr-human">player</small>' : '') : '<small>' + esc(botLabel(p)) + '</small>';
+    const tag = p.gone ? '<small>left</small>' : isHuman(p) ? (room ? '<small class="tr-human">player</small>' : '') : '<small>' + esc(botLabel(p)) + '</small>';
     // once a hand is over the chips are settled (and the level may already have risen), so read them direct
     const chips = T ? '<small class="tr-chips">' + Math.round(g.over ? T.chips[i] : p.stack * T.levels[T.level]).toLocaleString() + ' chips</small>' : '';
     return '<div class="tr-seat' + (turn ? ' turn' : '') + (p.folded ? ' folded' : '') + (won ? ' win' : '') + (mine ? ' hero' : '') + '" style="left:' + x + '%;top:' + y + '%">'
@@ -2986,7 +2992,7 @@ const Trainer = (() => {
   // Who may chatter now, and in which voice.
   function chatterCandidates() {
     if (!g || me < 0) return [];
-    return g.players.map((p, j) => ({ p, j })).filter(o => o.j !== me && (g.over || o.p.folded || o.p.out))
+    return g.players.map((p, j) => ({ p, j })).filter(o => o.j !== me && !o.p.empty && !o.p.gone && (g.over || o.p.folded || o.p.out))
       .filter(o => !(room && room.conns && Array.from(room.conns.values()).some(c => c.seat === o.j && c.talk === false)))   // a friend who asked for their character to stay quiet
       .map(o => ({ seat: o.j, name: o.p.name, voiceId: voiceFor(o.p) })).filter(o => o.voiceId);
   }
@@ -3137,7 +3143,7 @@ const Trainer = (() => {
       + '<label title="A low room murmur and the odd riffle of chips"><input type="checkbox" data-opt="roomTone"' + (opts.roomTone ? ' checked' : '') + ' /> 🎧 Room sound</label>'
       + (opts.roomTone ? sel('roomVol', opts.roomVol || 'soft', [['soft', 'soft'], ['normal', 'normal'], ['loud', 'louder']]) : '') + '</span>';
   }
-  const INVITE = code => 'Come and play poker with me on Poker Angel!\nTable code: ' + code + '\n1. Open Poker Angel → 🎓 Trainer (or, on a phone, https://frankthedog.github.io/poker-angel/).\n2. Before you join, press 🎙 My table voice and read the short paragraph — it gives your character your own voice at the table. A phone’s microphone is best.\n3. Type ' + code + ' under Play with friends and press Join a table.';
+  const INVITE = (code, plain) => 'Come and play poker with me on Poker Angel!' + (plain ? ' Just a game — only the people invited, no bots, no coaching.' : '') + '\nTable code: ' + code + '\n1. Open Poker Angel → 🎓 Trainer (or, on a phone, https://frankthedog.github.io/poker-angel/).\n2. Before you join, press 🎙 My table voice and read the short paragraph — it gives your character your own voice at the table. A phone’s microphone is best.\n3. Type ' + code + ' under Play with friends and press Join a table.';
 
   function voiceStatus() {
     if (HAS_TTS()) return '🎙 Voice: ' + (voiceCfg.ttsVoiceName || 'your engine') + ' (this PC’s engine)';
@@ -3203,7 +3209,7 @@ const Trainer = (() => {
   function roomBar() {
     if (!room) return '';
     const names = (isHost() ? tablePlayers() : room.players || []).map(p => esc(p.name)).join(' · ');
-    const mode = isHost()
+    const mode = room.plain ? '<span class="tr-dim">🃏 Just a game — own cards only, no bots, no coaching</span>' : isHost()
       ? '<label title="Face up: everyone sees every card and every grade as it happens. Own only: your own cards and grades; everyone’s are revealed when the hand ends."><input type="checkbox" data-room="faceUp"' + (room.faceUp ? ' checked' : '') + ' /> Cards face up for everyone</label>'
       : '<span class="tr-dim">' + (room.faceUp ? 'Cards face up for everyone' : 'Own cards only — all revealed at the end of each hand') + '</span>';
     return '<div class="tr-room"><b>👥 Table ' + esc(room.code) + '</b>'
@@ -3235,10 +3241,10 @@ const Trainer = (() => {
     if (!g) {
       if (room) {
         m.innerHTML = roomBar() + '<div class="tr-drill"><div class="tr-q">' + (isHost()
-          ? (room.status ? esc(room.status) : 'Your table code is <b class="tr-code">' + esc(room.code) + '</b><br>Send it to your friends. ' + (IN_BROWSER ? 'They open this same page, type it under <b>Play with friends</b> and press <b>Join a table</b>.' : 'In Poker Angel they open 🎓 Trainer → <b>Join a table</b> and type it in.') + ' Empty seats are played by bots.')
+          ? (room.status ? esc(room.status) : 'Your table code is <b class="tr-code">' + esc(room.code) + '</b><br>Send it to your friends. ' + (IN_BROWSER ? 'They open this same page, type it under <b>Play with friends</b> and press <b>Join a table</b>.' : 'In Poker Angel they open 🎓 Trainer → <b>Join a table</b> and type it in.') + (room.plain ? ' Just a game: only the people who join are dealt in — no bots, no grades, no coaching. Deal once at least one friend is here.' : ' Empty seats are played by bots.'))
           : (room.status ? esc(room.status) : 'Joined table <b>' + esc(room.code) + '</b>. Waiting for the host to start…')) + '</div>'
-          + (isHost() && !room.status ? '<div class="tr-row">' + fieldHtml() + '</div><div class="tr-row"><button data-act="play:next">🃏 Deal cash hands (100bb)</button></div>'
-            + '<div class="tr-q" style="margin-top:6px"><b>…or a tournament</b> for the whole table:</div>' + tourOptsHtml() + '<div class="tr-row"><button data-act="tour:start">🏆 Start a tournament</button></div>' : '') + '</div>';
+          + (isHost() && !room.status ? (room.plain ? '' : '<div class="tr-row">' + fieldHtml() + '</div>') + '<div class="tr-row"><button data-act="play:next">🃏 Deal cash hands (100bb)</button></div>'
+            + (room.plain ? '' : '<div class="tr-q" style="margin-top:6px"><b>…or a tournament</b> for the whole table:</div>' + tourOptsHtml() + '<div class="tr-row"><button data-act="tour:start">🏆 Start a tournament</button></div>') : '') + '</div>';
         renderSpot(); return;
       }
       m.innerHTML = '<div class="tr-drill">' + dailyHtml() + '<div class="tr-q tr-levelbox">' + levelSelHtml() + '<br><span class="tr-dim">' + esc(COACH_LEVELS[lvlIdx()][2]) + ' Change it any time — it changes how things are explained, not the advice.</span></div>'
@@ -3251,10 +3257,11 @@ const Trainer = (() => {
         + '<div class="tr-row">' + [20, 30, 45, 60].map(m => '<button class="ghost" data-act="play:sleep" data-v="' + m + '">🌙 ' + m + ' minutes</button>').join('') + '</div></div>'
         + '<div class="tr-q" style="margin-top:8px"><b>🏆 Tournament</b> — a sit-and-go against the bots: blinds rise, the big blind posts an ante (as at the WSOP), players are knocked out and the top places are paid. Once stacks are short, every shove, fold and call is graded in prize money (ICM) next to the chip-only answer.</div>'
         + tourOptsHtml() + '<div class="tr-row"><button data-act="tour:start">🏆 Start a tournament</button></div>'
-        + '<div class="tr-q" style="margin-top:8px"><b>Play with friends</b> — over the internet, everyone graded, everyone learning together. ' + (IN_BROWSER ? 'Friends open this same page — nothing to install.' : 'Each friend needs Poker Angel.') + '</div>'
+        + '<div class="tr-q" style="margin-top:8px"><b>Play with friends</b> — over the internet, everyone graded, everyone learning together — or, with the box below ticked, just a game. ' + (IN_BROWSER ? 'Friends open this same page — nothing to install.' : 'Each friend needs Poker Angel.') + '</div>'
         + '<div class="tr-row"><input id="trName" placeholder="Your name" maxlength="16" style="width:180px" value="' + esc(ls(NAME_KEY) || '') + '" />'
         + '<button data-act="room:host">👥 Host a table</button>'
         + '<input id="trCode" placeholder="Table code" maxlength="5" style="width:130px;text-transform:uppercase" /><input id="trPw" placeholder="Password (optional)" maxlength="24" style="width:150px" /><button class="ghost" data-act="room:join">🔗 Join a table</button></div>'
+        + '<div class="tr-dim"><label style="display:inline-flex;gap:6px;align-items:center" title="Only the people who join are dealt in: no bots in the empty chairs, no grades, no advice, no explanations — a plain game of poker among friends. Nothing from it goes into your training record."><input type="checkbox" data-opt="plain"' + (opts.plain ? ' checked' : '') + ' /> 🃏 Just a game — only the people I invite, no bots, no coaching</label></div>'
         + '<div class="tr-dim"><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" data-opt="faceUp"' + (opts.faceUp ? ' checked' : '') + ' /> Cards face up for everyone at my table (a teaching table; otherwise each player sees only their own)</label> · a password keeps strangers out even if they guess the code.</div>' + voiceRecHtml() + '</div>';
       renderSpot(); return;
     }
@@ -3287,11 +3294,11 @@ const Trainer = (() => {
         sizes().forEach(z => b.push('<button class="raise" data-act="play:raise" data-to="' + z.to + '">' + esc(z.label) + '</button>'));
         b.push('<span class="tr-custom"><input type="number" id="trTo" min="' + L.minTo + '" max="' + L.maxTo + '" step="0.5" value="' + L.minTo + '" /><button class="raise" data-act="play:raiseTo">' + (g.curBet > 0 ? 'Raise to' : 'Bet') + '</button></span>');
       }
-      b.push('<button class="ghost" data-act="play:hint">💡 Hint</button>');
+      if (!(room && room.plain)) b.push('<button class="ghost" data-act="play:hint">💡 Hint</button>');
       if (!room) b.push(AUTO_BTN);
       actions = b.join('');
     }
-    const optsRow = levelSelHtml() + '<label><input type="checkbox" data-opt="advise"' + (opts.advise ? ' checked' : '') + ' /> Advise me before I act</label>'
+    const optsRow = room && room.plain ? (CAN_TALK() ? voiceSelHtml() : '') + atmosphereHtml() : levelSelHtml() + '<label><input type="checkbox" data-opt="advise"' + (opts.advise ? ' checked' : '') + ' /> Advise me before I act</label>'
       + '<label><input type="checkbox" data-opt="detail"' + (opts.detail ? ' checked' : '') + ' /> 📊 Detailed explanations (stat tables)</label>'
       + (CAN_TALK() ? '<label><input type="checkbox" data-opt="speak"' + (opts.speak ? ' checked' : '') + ' /> 🔊 Read explanations aloud</label>' + voiceSelHtml() : '') + atmosphereHtml()
       + '<label><input type="checkbox" data-opt="pause"' + (pauseOn() ? ' checked' : '') + ' /> Explain after I act' + (room ? '' : ' (and pause)') + '</label>'
@@ -3300,17 +3307,17 @@ const Trainer = (() => {
       + (room ? '' : '<label title="When you fold, the hand carries on one move at a time with the bots’ cards face up and each move explained."><input type="checkbox" data-opt="watch"' + (opts.watch !== false ? ' checked' : '') + ' /> 👀 Watch the bots after I fold</label>')
       + (room || T ? '' : '<label title="Like PokerStars Zoom: when you fold, the rest of the hand plays out at once and you’re dealt the next one — many more hands per hour."><input type="checkbox" data-opt="fastFold"' + (opts.fastFold ? ' checked' : '') + ' /> ⚡ Fast-fold</label>');
     const myTurn = !holding() && !autoOn() && !g.over && me >= 0 && g.toAct === me;
-    const advice = myTurn ? storyHtml() + (opts.advise ? adviceHtml() : '') : '';
+    const advice = myTurn && !(room && room.plain) ? storyHtml() + (opts.advise ? adviceHtml() : '') : '';
     m.innerHTML = roomBar() + tourBar() + ratingsBar() + '<div class="tr-felt-wrap"><div class="tr-felt">' + felt + '</div></div>'
       + '<div class="tr-actions">' + actions + '</div>'
       + '<div class="tr-key">Key: ' + Array.from(new Set(g.players.map((q, j) => posOf(g, j)).filter(Boolean))).map(p => '<b>' + p + '</b> ' + POS_FULL[p] + (p === 'BTN' ? ' (the dealer)' : p === 'UTG' ? ' (first to act)' : '')).join(' · ') + ' · <b>bb</b> big blinds · <b>D</b> dealer button · keys: <b>F</b> fold <b>C</b> call/check <b>R</b> raise <b>H</b> ½ pot <b>P</b> pot <b>N</b> next</div>'
-      + '<div class="tr-opts">' + optsRow + '<span>Hand #' + g.handNo + (T ? '' : ' · your session ' + (stats.net >= 0 ? '+' : '') + bbs(stats.net)) + '</span></div>';
-    setPanel(primerHtml() + (autoOn() ? autoHtml() : autoClose) + (autoClose ? '' : watchHtml()) + panel + advice);
+      + '<div class="tr-opts">' + optsRow + '<span>Hand #' + g.handNo + (T || (room && room.plain) ? '' : ' · your session ' + (stats.net >= 0 ? '+' : '') + bbs(stats.net)) + '</span></div>';
+    setPanel((room && room.plain ? '' : primerHtml()) + (autoOn() ? autoHtml() : autoClose) + (autoClose ? '' : watchHtml()) + panel + advice);
     renderSpot();
   }
   function renderSpot() {
     const el = $('trSpot'); if (!el) return;
-    if (tab !== 'play' || !g) { el.innerHTML = '<b>Coach</b><br>' + (tab === 'play' ? (room ? 'Grades for the whole table appear below.' : 'Deal a hand to start.') : 'Answers and explanations appear below.'); return; }
+    if (tab !== 'play' || !g) { el.innerHTML = '<b>Coach</b><br>' + (tab === 'play' ? (room ? (room.plain ? 'Just a game — no grades, no coaching.' : 'Grades for the whole table appear below.') : 'Deal a hand to start.') : 'Answers and explanations appear below.'); return; }
     const T = g.tour, lines = [];
     if (T) {
       const icm = tourIcm(g);
@@ -4147,7 +4154,7 @@ const Trainer = (() => {
       if (v === 'join') return joinTable(($('trCode') || {}).value);
       if (v === 'leave') return leaveRoom();
       if (v === 'copy' && room) { try { navigator.clipboard.writeText(room.code); toast('Table code ' + room.code + ' copied', 'green'); } catch (e) {} }
-      if (v === 'invite' && room) { try { navigator.clipboard.writeText(INVITE(room.code)); toast('Invitation copied — paste it into a message', 'green'); } catch (e) {} }
+      if (v === 'invite' && room) { try { navigator.clipboard.writeText(INVITE(room.code, room.plain)); toast('Invitation copied — paste it into a message', 'green'); } catch (e) {} }
     },
     pf: v => {
       if (v === 'next') { genPf(); return renderPf(); }
