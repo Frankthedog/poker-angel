@@ -3985,8 +3985,8 @@ const Trainer = (() => {
         const L = legal(X.g, 0), st = X.free ? null : X.sc.steps[X.i], b = ['<button class="fold" data-act="ex:fold">Fold</button>'];
         b.push(L.toCall > 0 ? '<button data-act="ex:call">Call ' + bbs(L.toCall) + '</button>' : '<button data-act="ex:check">Check</button>');
         if (L.canRaise && X.free) {
-          sizes().forEach(z => b.push('<button class="raise" data-act="ex:raise" data-to="' + z.to + '">' + esc(z.label) + '</button>'));
-          b.push('<button class="raise" data-act="ex:allin">All-in ' + bbs(L.maxTo) + '</button>');
+          const zs = sizes(); zs.forEach(z => b.push('<button class="raise" data-act="ex:raise" data-to="' + z.to + '">' + esc(z.label) + '</button>'));
+          if (!zs.some(z => z.to >= L.maxTo - 0.01)) b.push('<button class="raise" data-act="ex:allin">All-in ' + bbs(L.maxTo) + '</button>');
         } else if (L.canRaise) {
           const to = st.play[0] === 'raise' ? Math.min(st.play[1], L.maxTo) : ((sizes()[0] || {}).to || L.minTo);
           if (to < L.maxTo - 0.01) b.push('<button class="raise" data-act="ex:raise">' + (X.g.curBet > 0 && X.g.street === 0 || L.toCall > 0 ? 'Raise to ' : 'Bet ') + bbs(to) + '</button>');
