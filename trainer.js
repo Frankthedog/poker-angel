@@ -2541,19 +2541,42 @@ const Trainer = (() => {
     }
     return parts;
   }
+  // The device's own voice, one short passage at a time, with the reader keeping its own account of
+  // what is playing: on Windows and on iPhones speechSynthesis.speaking can stay true for ever after an
+  // utterance dies, and an utterance queued in the same instant as cancel() is often dropped. So: a
+  // moment after cancel(), each passage has a time limit (moved past if its end never comes), and the
+  // Angel's pacing asks localSpeaking(), not the browser.
+  let localQ = [], localCur = null, localStarted = false, localTimer = 0, localKeep = 0, localGen = 0;
+  const localSpeaking = () => !!localCur || localQ.length > 0;
+  function localStop() {
+    localGen++; localQ = []; localCur = null; localStarted = false; clearTimeout(localTimer); clearInterval(localKeep); localKeep = 0;
+    if (CAN_SPEAK) try { speechSynthesis.cancel(); } catch (e) {}
+  }
   function speakLocal(parts) {
     if (!CAN_SPEAK) return;
-    try {
-      speechSynthesis.cancel();
-      const v = pickVoice(), calm = autoOn() && auto.calm;        // 🌙 sleep story: unhurried, lower, softer
-      for (const part of parts) {
-        const u = new SpeechSynthesisUtterance(part);
-        if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-GB';
-        u.rate = calm ? 0.82 : (opts.speakRate || 1); u.pitch = calm ? 0.88 : 1; u.volume = calm ? 0.8 : 1;
-        speechSynthesis.speak(u);
-      }
-      if (speechSynthesis.paused) speechSynthesis.resume();
-    } catch (e) { console.error('speech', e); }
+    localStop();
+    const gen = localGen; localQ = parts.slice();
+    localTimer = setTimeout(() => localNext(gen), ON_PHONE ? 250 : 80);
+  }
+  function localNext(gen) {
+    if (gen !== localGen) return;
+    const part = localQ.shift();
+    if (!part) { localCur = null; clearInterval(localKeep); localKeep = 0; return; }
+    const v = pickVoice(), calm = autoOn() && auto.calm;        // 🌙 sleep story: unhurried, lower, softer
+    const u = new SpeechSynthesisUtterance(part);
+    if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-GB';
+    u.rate = calm ? 0.82 : (opts.speakRate || 1); u.pitch = calm ? 0.88 : 1; u.volume = calm ? 0.8 : 1;
+    let done = false;
+    const finish = () => { if (done) return; done = true; clearTimeout(localTimer); if (gen !== localGen) return; localCur = null; localStarted = false; localTimer = setTimeout(() => localNext(gen), 150); };
+    u.onstart = () => { if (gen === localGen) localStarted = true; };
+    u.onend = finish; u.onerror = finish;
+    localCur = u; localStarted = false;
+    // its time limit: generous for the words it has, then on to the next passage regardless
+    const limit = 4000 + part.length * (calm ? 120 : 95) / (opts.speakRate || 1);
+    localTimer = setTimeout(() => { if (done || gen !== localGen) return; done = true; try { speechSynthesis.cancel(); } catch (e) {} localCur = null; localStarted = false; localTimer = setTimeout(() => localNext(gen), ON_PHONE ? 250 : 80); }, limit);
+    try { speechSynthesis.speak(u); if (speechSynthesis.paused) speechSynthesis.resume(); } catch (e) { console.error('speech', e); finish(); return; }
+    // desktop Chromium lets long speech trail off unless nudged now and then
+    if (!localKeep && !ON_PHONE) localKeep = setInterval(() => { try { if (speechSynthesis.speaking && !speechSynthesis.paused) speechSynthesis.resume(); } catch (e) {} }, 5000);
   }
   let ttsAudio = null, ttsBusy = false, ttsGen = 0, ttsFails = 0;
   // Phones only play sound that a tap started. The first tap anywhere plays a split second of silence
@@ -2565,7 +2588,7 @@ const Trainer = (() => {
     try {
       if (!voiceEl) { voiceEl = new Audio(); voiceEl.setAttribute('playsinline', ''); voiceEl.preload = 'auto'; }
       voiceEl.src = SILENT_WAV; const p = voiceEl.play(); if (p && p.then) p.then(() => { voiceUnlocked = true; }, () => {}); else voiceUnlocked = true;
-      if (CAN_SPEAK) { try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } catch (e) {} }   // and the phone's own voice
+      if (CAN_SPEAK) { try { const u = new SpeechSynthesisUtterance('ready'); u.volume = 0; u.lang = 'en-GB'; speechSynthesis.speak(u); } catch (e) {} }   // and the phone's own voice: iOS allows speech only after a tap has spoken
     } catch (e) {}
   }
   // Play one clip to the end through the shared player (falls back to a fresh element on the desktop).
@@ -2604,11 +2627,11 @@ const Trainer = (() => {
   function speak(text) {
     if (!CAN_TALK()) return;
     const t = forSpeech(text); if (!t) return;
-    ttsStop(); pcStop(); if (CAN_SPEAK) try { speechSynthesis.cancel(); } catch (e) {}
+    ttsStop(); pcStop(); localStop();
     if (chatterGain) { try { chatterGain.gain.setTargetAtTime(0.35, actx.currentTime, 0.1); chatterGain.gain.setTargetAtTime(1, actx.currentTime + 2.5, 1.5); } catch (e) {} }
-    if (HAS_TTS() && ttsFails < 3) ttsSay(passages(t, voiceCfg.engine === 'own' ? 170 : 500)); else if (pcVoiceOn()) pcSay(passages(t, 170)); else speakLocal(passages(t, 220));   // the own engine: a sentence or two at a time, so the first words come quickly while the rest is made
+    if (HAS_TTS() && ttsFails < 3) ttsSay(passages(t, voiceCfg.engine === 'own' ? 170 : 500)); else if (pcVoiceOn()) pcSay(passages(t, 170)); else speakLocal(passages(t, autoOn() && auto.calm ? 150 : 200));   // the own engine: a sentence or two at a time, so the first words come quickly while the rest is made
   }
-  function hush() { ttsStop(); pcStop(); if (CAN_SPEAK) try { speechSynthesis.cancel(); } catch (e) {} }
+  function hush() { ttsStop(); pcStop(); localStop(); }
   // ---- a voice on your PC, used from the web page (phone) ----
   // The page sends each passage to the PC over the phone link (sendTo); the PC's engine makes the clip
   // (cached there) and sends it back; the page plays it. Needs Poker Angel open on the PC.
@@ -2647,8 +2670,8 @@ const Trainer = (() => {
       speakLocal(parts);
     } finally { if (gen === pcGen) { pcBusy = false; pcAudio = null; } }
   }
-  const voiceBusy = () => ttsBusy || pcBusy || voiceClipPlaying() || (CAN_SPEAK && speechSynthesis.speaking);
-  const voiceQueued = () => !ttsBusy && CAN_SPEAK && !speechSynthesis.speaking && speechSynthesis.pending;
+  const voiceBusy = () => ttsBusy || pcBusy || voiceClipPlaying() || localSpeaking();
+  const voiceQueued = () => !ttsBusy && !!localCur && !localStarted;          // the device's voice has a passage it hasn't begun
   // The voice picker under the table: this PC's voices (and a Try button), or the ElevenLabs voice from ⚙ Settings.
   function voiceSelHtml() {
     if (!CAN_TALK()) return '';
@@ -2657,16 +2680,18 @@ const Trainer = (() => {
       const cur = voiceCfg.ttsVoiceName || '';
       return '<span class="tr-voice">🎙 Voice: <select data-sel="coachVoice"><optgroup label="Your recorded voices">' + mine.map(v => '<option value="' + esc(v.name) + '"' + (v.name === cur ? ' selected' : '') + '>' + esc(v.name) + '</option>').join('') + '</optgroup>'
         + (voiceCfg.engine === 'eleven' && cur && !mine.some(v => v.name === cur) ? '<option value="' + esc(cur) + '" selected>' + esc(cur) + '</option>' : '')
-        + '<option value="__pc">this PC’s built-in voice</option></select><button class="ghost tr-mini" data-act="ui:voicetry">🔈 Try</button></span>';
+        + (localVoices().some(v => /^en/i.test(v.lang)) ? '<optgroup label="This PC’s built-in voices">' + localVoices().filter(v => /^en/i.test(v.lang)).map(v => '<option value="__pc:' + esc(v.name) + '">' + esc(v.name.replace(/^Microsoft /, '')) + '</option>').join('') + '</optgroup>' : '<option value="__pc">this PC’s built-in voice</option>')
+        + '</select><button class="ghost tr-mini" data-act="ui:voicetry">🔈 Try</button></span>';
     }
     const vs = localVoices(), cur = pickVoice();
     const en = vs.filter(v => /^en/i.test(v.lang)), rest = vs.filter(v => !/^en/i.test(v.lang));
     const opt = v => '<option value="' + esc(v.name) + '"' + (cur && v.name === cur.name ? ' selected' : '') + '>' + esc(v.name.replace(/^Microsoft /, '')) + '</option>';
-    const pcVoices = (!HAS_LIB && opts.pcVoiceEnabled && sendTo && sendTo.voices) ? sendTo.voices : [];
+    const pcVoices = (!HAS_LIB && opts.pcVoiceEnabled && pcLinked() && sendTo.voices) ? sendTo.voices : [];
+    const phoneNote = !HAS_LIB && ON_PHONE ? '<span class="tr-dim">' + (vs.length ? '' : 'The phone hasn’t listed its voices yet — tap 🔈 Try. ') + 'No sound? Turn the volume up and flick the ring/silent switch on the side of the phone: the phone’s voice follows it.</span>' : '';
     const pcGroup = pcVoices.length ? '<optgroup label="' + (pcLinked() ? 'On your PC (linked)' : 'On your PC (not linked now)') + '">' + pcVoices.map(n => '<option value="__pcv:' + esc(n) + '"' + (opts.pcVoice === n ? ' selected' : '') + '>' + esc(n) + '</option>').join('') + '</optgroup>' : '';
     return '<span class="tr-voice">🔈 Voice: <select data-sel="voice">' + pcGroup + (mine.length ? '<optgroup label="Your recorded voices">' + mine.map(v => '<option value="__own:' + esc(v.name) + '">' + esc(v.name) + '</option>').join('') + '</optgroup><optgroup label="This PC’s built-in voices">' : '') + en.map(opt).join('') + (mine.length ? '</optgroup>' : '') + (rest.length ? '<optgroup label="Other languages">' + rest.map(opt).join('') + '</optgroup>' : '') + '</select>'
       + '<select data-sel="speakRate" title="Reading speed">' + [[0.8, 'slower'], [0.9, 'a little slower'], [1, 'normal speed'], [1.1, 'a little faster'], [1.25, 'faster']].map(([r, n]) => '<option value="' + r + '"' + ((opts.speakRate || 1) === r ? ' selected' : '') + '>' + n + '</option>').join('') + '</select>'
-      + '<button class="ghost tr-mini" data-act="ui:voicetry">🔈 Try</button>'
+      + '<button class="ghost tr-mini" data-act="ui:voicetry">🔈 Try</button>' + phoneNote
       + (window.api && window.api.ttsSpeak ? '<span class="tr-dim">Want a natural voice, or a family member’s own? ⚙ Settings → Voice.</span>' : '') + '</span>';
   }
   // ---- 🎙 voices: record, name, assign ----
@@ -4263,6 +4288,7 @@ const Trainer = (() => {
         opts.voice = sel.value; saveOpts(); speak(VOICE_SAMPLE); return;
       }
       if (sel && sel.dataset.sel === 'coachVoice') {
+        if (/^__pc:/.test(sel.value)) { opts.voice = sel.value.slice(5); saveOpts(); window.api.setTts({ engine: 'local' }).then(() => { voiceChanged(); setTimeout(() => speak(VOICE_SAMPLE), 400); }); return; }
         if (sel.value === '__pc') { window.api.setTts({ engine: 'local' }).then(() => { voiceChanged(); setTimeout(() => speak(VOICE_SAMPLE), 400); }); return; }
         const id = libVoiceId(sel.value); if (id) window.api.setTts({ engine: voiceCfg.engine === 'local' ? 'own' : voiceCfg.engine, voice: id, voiceName: sel.value }).then(() => { voiceChanged(); setTimeout(() => speak(VOICE_SAMPLE), 400); });
         return;
