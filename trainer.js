@@ -3844,7 +3844,7 @@ const Trainer = (() => {
   function lessonGame(sc) {
     const rng = mulberry(sc.seed || 7);
     const g0 = newGame(rng, 'mixed');
-    g0.players.forEach((p, i) => { if (i) { p.style = 'tag'; p.level = 'regular'; } });
+    if (!sc.free) g0.players.forEach((p, i) => { if (i) { p.style = 'tag'; p.level = 'regular'; } });
     g0.players[0].name = 'You';
     if (sc.tourBB) newTournament(g0, { startBB: sc.tourBB, perLevel: 50 });
     const n = g0.players.length, k = POS.indexOf(sc.pos), button = (n - k) % n;
@@ -3906,6 +3906,35 @@ const Trainer = (() => {
     drill.ex = { id, si, sc, g: lessonGame(sc), i: 0, notes: [], feedback: null, waiting: false, done: false };
     exAdvance();
   }
+  // After a lesson's scripted hand: fresh, random hands at the same table, told the same way — the
+  // bots play, each move is a line in the story, and every decision of yours is graded.
+  function startFree(id) {
+    const base = (LESSON_HANDS[id] || [])[0] || {}, n = drill.ex && drill.ex.id === id && drill.ex.free ? drill.ex.free + 1 : 1;
+    const sc = { title: 'A fresh hand', free: true, pos: POS[Math.floor(Math.random() * POS.length)], seed: Math.floor(Math.random() * 4294967296) >>> 0, tourBB: base.tourBB };
+    drill.ex = { id, si: Math.max(0, (LESSON_HANDS[id] || []).length - 1), sc, g: lessonGame(sc), i: 0, notes: [], feedback: null, waiting: false, done: false, free: n };
+    const G = drill.ex.g;
+    drill.ex.notes.push('Fresh hand ' + n + '. You are in the ' + posOf(G, 0) + ' with ' + cardsTxt(G.players[0].cards) + ', ' + bbs(r2(G.players[0].stack)) + ' behind. ' + (G.tour ? 'Tournament blinds.' : 'Blinds 0.5/1.'));
+    exFreeAdvance();
+  }
+  const STREET_WORD = ['', 'flop', 'turn', 'river'];
+  // One move in a fresh hand, told as a line: who did what, and the new street when the betting closes.
+  function exAct(G, i, a) {
+    const st = G.street;
+    act(G, i, a);
+    const last = G.log.filter(l => l.i === i && l.kind !== 'post').pop();
+    drill.ex.notes.push((i === 0 ? 'You' : G.players[i].name) + ' ' + (last ? last.txt.replace(/^(fold|check|call|bet|raise)s?\b/, (m, v) => i === 0 ? v : m) : a.type) + '.');
+    if (G.street !== st && !G.over && G.street > 0) drill.ex.notes.push('The ' + STREET_WORD[G.street] + ': ' + cardsTxt(G.street === 1 ? G.board.slice(0, 3) : G.board.slice(-1)) + (G.street > 1 ? ' (board ' + cardsTxt(G.board) + ')' : '') + '. Pot ' + bbs(r2(potTotal(G))) + '.');
+  }
+  function exFreeAdvance() {
+    const X = drill.ex, G = X.g;
+    let guard = 0;
+    while (!G.over && G.toAct !== 0 && guard++ < 100) { try { exAct(G, G.toAct, botDecide(G, G.toAct, Math.random)); } catch (e) { console.error('fresh hand', e); break; } }
+    if (G.over || guard >= 100) { X.done = true; X.waiting = false; return renderExample(); }
+    const L = legal(G, 0);
+    X.notes.push('Your turn' + (G.street ? ' on the ' + STREET_WORD[G.street] : '') + ': ' + (L.toCall > 0 ? bbs(r2(L.toCall)) + ' to call, pot ' + bbs(r2(potTotal(G))) : 'nobody has bet, pot ' + bbs(r2(potTotal(G)))) + '.');
+    X.waiting = true;
+    renderExample();
+  }
   // Play script steps until one needs the reader: a note to read (Next) or a decision to make.
   function exAdvance() {
     const X = drill.ex; if (!X || X.done) return renderExample();
@@ -3928,13 +3957,18 @@ const Trainer = (() => {
     if (X.g.over && X.i >= X.sc.steps.length) X.done = true;
     renderExample();
   }
-  function exChoose(kind) {
+  function exChoose(kind, toPick) {
     const X = drill.ex; if (!X || !X.waiting) return;
-    const st = X.sc.steps[X.i], L = legal(X.g, 0);
-    const to = kind === 'raise' ? (st.play[0] === 'raise' ? st.play[1] : (sizes()[0] || {}).to) : 0;
+    const st = X.free ? null : X.sc.steps[X.i], L = legal(X.g, 0);
     const saved = { g, me }; g = X.g; me = 0;
-    let res; try { res = gradeChoice(X.g, 0, kind === 'allin' ? 'raise' : kind, kind === 'allin' ? L.maxTo : to); res.detail = detailFor(X.g, 0); } finally { g = saved.g; me = saved.me; }
+    let res, to = 0;
+    try {
+      if (kind === 'raise') to = Number(toPick) || (st && st.play[0] === 'raise' ? st.play[1] : (sizes()[0] || {}).to) || L.minTo;
+      if (kind === 'allin') to = L.maxTo;
+      res = gradeChoice(X.g, 0, kind === 'allin' ? 'raise' : kind, to); res.detail = detailFor(X.g, 0);
+    } finally { g = saved.g; me = saved.me; }
     X.feedback = res;
+    if (X.free) { exAct(X.g, 0, { type: res.kind, to }); X.waiting = false; return exFreeAdvance(); }   // a fresh hand carries on with YOUR play
     act(X.g, 0, { type: st.play[0], to: st.play[1] });         // the hand carries on with the best play
     X.waiting = false; X.i++;
     if (X.g.over && X.i >= X.sc.steps.length) X.done = true;
@@ -3948,9 +3982,12 @@ const Trainer = (() => {
     try {
       felt = feltHtml();
       if (X.waiting) {
-        const L = legal(X.g, 0), st = X.sc.steps[X.i], b = ['<button class="fold" data-act="ex:fold">Fold</button>'];
+        const L = legal(X.g, 0), st = X.free ? null : X.sc.steps[X.i], b = ['<button class="fold" data-act="ex:fold">Fold</button>'];
         b.push(L.toCall > 0 ? '<button data-act="ex:call">Call ' + bbs(L.toCall) + '</button>' : '<button data-act="ex:check">Check</button>');
-        if (L.canRaise) {
+        if (L.canRaise && X.free) {
+          sizes().forEach(z => b.push('<button class="raise" data-act="ex:raise" data-to="' + z.to + '">' + esc(z.label) + '</button>'));
+          b.push('<button class="raise" data-act="ex:allin">All-in ' + bbs(L.maxTo) + '</button>');
+        } else if (L.canRaise) {
           const to = st.play[0] === 'raise' ? Math.min(st.play[1], L.maxTo) : ((sizes()[0] || {}).to || L.minTo);
           if (to < L.maxTo - 0.01) b.push('<button class="raise" data-act="ex:raise">' + (X.g.curBet > 0 && X.g.street === 0 || L.toCall > 0 ? 'Raise to ' : 'Bet ') + bbs(to) + '</button>');
           b.push('<button class="raise" data-act="ex:allin">All-in ' + bbs(L.maxTo) + '</button>');
@@ -3961,10 +3998,10 @@ const Trainer = (() => {
     const last = X.notes.slice(-1)[0] || '', earlier = X.notes.slice(0, -1);
     const fb = X.feedback ? '<div class="tr-explain"><b>' + esc(plain('You chose: ' + X.feedback.verb + ' · ' + X.feedback.G.head)) + '</b><div class="tr-why">' + fmtWhy(X.feedback.G.why) + '</div>' + detailHtml(X.feedback.detail, true) + '</div>' : '';
     const end = X.done ? (X.g.over && X.g.result ? '<div class="tr-dim">' + esc(plain(X.g.result.wins.map(w => (w.i === 0 ? 'You win ' : X.g.players[w.i].name + ' wins ') + bbs(r2(w.amt)) + (w.name ? ' with ' + w.name : '')).join(' · '))) + '</div>' : '')
-      + '<div class="tr-row">' + (list[X.si + 1] ? '<button class="primary" data-act="ex:nextex">Next example ▶</button>' : '') + '<button class="ghost" data-act="ex:again">Play it again</button><button class="ghost" data-act="ex:close">Back to the lesson</button></div>' : '';
+      + '<div class="tr-row">' + (!X.free && list[X.si + 1] ? '<button class="primary" data-act="ex:nextex">Next example ▶</button>' : '') + '<button class="' + (X.free || !list[X.si + 1] ? 'primary' : 'ghost') + '" data-act="ex:free" title="A new random hand at this table: the bots play, each move is told, every decision of yours is graded.">Next hand ▶</button>' + (X.free ? '' : '<button class="ghost" data-act="ex:again">Play it again</button>') + '<button class="ghost" data-act="ex:close">Back to the lesson</button></div>' : '';
     const controls = X.waiting ? '<div class="tr-actions">' + choices + '</div>' : (X.done ? '' : '<div class="tr-actions"><button class="primary" data-act="ex:next">Next ▶</button></div>');
-    m.innerHTML = '<div class="tr-replay-head"><button class="ghost" data-act="ex:close">← Lessons</button><b>Example hand · ' + esc(X.sc.title) + '</b>'
-      + (list.length > 1 ? '<span class="tr-dim">' + (X.si + 1) + ' of ' + list.length + '</span>' : '') + '</div>'
+    m.innerHTML = '<div class="tr-replay-head"><button class="ghost" data-act="ex:close">← Lessons</button><b>' + (X.free ? 'Fresh hand ' + X.free : 'Example hand · ' + esc(X.sc.title)) + '</b>'
+      + (X.free ? '<span class="tr-dim">a new deal every hand — your own cards, graded as you go</span>' : list.length > 1 ? '<span class="tr-dim">' + (X.si + 1) + ' of ' + list.length + '</span>' : '') + '</div>'
       + '<div class="tr-felt-wrap"><div class="tr-felt">' + felt + '</div></div>'
       + controls;
     setPanel('<div class="tr-explain tr-narrate"><b>' + esc(plain(last)) + '</b>' + (earlier.length ? '<details><summary>What happened so far</summary><div class="tr-why">' + esc(plain(earlier.join('\n'))) + '</div></details>' : '') + end + '</div>' + fb);
@@ -4120,14 +4157,15 @@ const Trainer = (() => {
       if (v === 'voicetry') speak(VOICE_SAMPLE);
       if (v === 'freshtalk') freshTalk();
     },
-    ex: v => {
+    ex: (v, b) => {
       if (v.indexOf('start:') === 0) return startExample(v.slice(6), 0);
       const X = drill.ex; if (!X) return;
-      if (v === 'next') return exAdvance();
+      if (v === 'free') return startFree(X.id);
+      if (v === 'next') return X.free ? exFreeAdvance() : exAdvance();
       if (v === 'nextex') return startExample(X.id, X.si + 1);
       if (v === 'again') return startExample(X.id, X.si);
       if (v === 'close') { drill.learnOpen = X.id; drill.ex = null; return renderLearn(); }
-      exChoose(v);
+      exChoose(v, b && b.dataset.to);
     },
     hist: v => {
       if (v.indexOf('open:') === 0) { const rec = history.find(h => h.id === v.slice(5)); if (rec) drill.replay = { rec, step: 0 }; return renderHands(); }
