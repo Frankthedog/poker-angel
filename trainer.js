@@ -1675,15 +1675,105 @@ const Trainer = (() => {
     return (auto.intro ? '<div class="tr-why"><b class="tr-lbl">Tonight’s story: ' + esc(T.title) + '.</b> ' + esc(T.intro) + '</div>' : '')
       + '<div class="tr-why">' + esc('The dealer shuffles and deals. ' + T.who + ' is in the ' + (POS_FULL[posOf(g, me)] || posOf(g, me)) + '.') + '</div>';
   }
-  function sleepStory(mins, calm, themeId) {
+  // ---- 🌙 the sleep story: a story read at a walking pace, the table showing the hand in it ----
+  // Not the Angel playing: one of twelve written stories (renderer/stories.js), read paragraph by
+  // paragraph with a long pause between, and — when the time allows — once more, slower, the way
+  // the best bedtime stories are told. The felt shows the hand the storyteller is holding, when the
+  // paragraph has one. Stories come in turn (opts.storyDone), or the one picked for tonight.
+  const STORIES = typeof PA_STORIES !== 'undefined' ? PA_STORIES : (typeof require === 'function' ? (() => { try { return require('./stories.js'); } catch (e) { return []; } })() : []);
+  const storyNext = () => STORIES.find(x => x.id === storyAhead().id) || STORIES[0];
+  // How to fit a story to the minutes asked for: one reading or two, and the pause between paragraphs.
+  // A calm reading runs at about 100 words a minute; the second, slower one takes about 15% longer.
+  function talePlan(words, paras, mins) {
+    const target = Math.max(5, Number(mins) || 20) * 60, one = words / 100 * 60;
+    const passes = target >= one * 1.6 ? 2 : 1, speech = passes === 2 ? one * 2.15 : one;
+    const pause = Math.max(2.5, Math.min(20, (target - speech) / Math.max(1, paras * passes)));
+    return { passes, pause: Math.round(pause * 10) / 10, one: Math.round(one) };
+  }
+  let tale = null;   // { S, i, pass, passes, pause, slow, endAt, timer, scene, g, prevSpeak }
+  function sleepStory(mins, calm, storyId) {
     if (room) leaveRoom(true);
     if (auto) autoStop(true);
-    if (themeId && STORY_THEMES.some(t => t.id === themeId)) opts.storyPick = themeId;
-    if (calm !== false) freshTable();                                         // tonight's table is set for tonight's story
-    opts.autoMins = Math.max(0, Math.round(Number(mins) || 0)); opts.autoCalm = calm !== false; opts.speak = true; saveOpts();
+    taleStop(true);
+    if (storyId && STORIES.some(x => x.id === storyId)) opts.storyPick = storyId;
+    const theme = pickTheme(), S = STORIES.find(x => x.id === theme.id) || STORIES[0];
+    if (!S) { toast('No stories are loaded', 'red'); return; }
+    opts.autoMins = Math.max(0, Math.round(Number(mins) || 0)); opts.autoCalm = calm !== false; saveOpts();
+    const words = S.paras.reduce((n, p) => n + p.t.split(/\s+/).length, 0), plan = talePlan(words, S.paras.length, opts.autoMins || 20);
+    tale = { S, i: -1, pass: 1, passes: plan.passes, pause: plan.pause, slow: false, endAt: Date.now() + (opts.autoMins || 20) * 60000, timer: 0, scene: null, g: null, prevSpeak: opts.speak, read: [] };
+    opts.speak = true;
+    freshTable(); spokenLast = ''; said = new Set();
     if (!shown) open();
     setTab('play');
-    autoStart();
+    toast('🌙 ' + S.title + ' — ' + S.place + '. Press ⏹ whenever you like.', 'green');
+    taleNext();
+  }
+  function taleNext() {
+    if (!tale) return;
+    clearTimeout(tale.timer);
+    tale.i++;
+    if (tale.i >= tale.S.paras.length) {
+      if (tale.pass < tale.passes && Date.now() < tale.endAt - 90000) { tale.pass++; tale.i = 0; tale.slow = true; tale.read = []; }
+      else return taleEnd();
+    }
+    if (tale.pass > 1 && Date.now() >= tale.endAt) return taleEnd();          // the time is up: the second telling stops at the end of a paragraph
+    const p = tale.S.paras[tale.i];
+    if (p.scene) tale.scene = p.scene;
+    tale.read.push(p.t);
+    if (tab === 'play' && shown) renderPlay(); else renderSpot();
+    speak(p.t);
+    const t0 = Date.now();
+    const tick = () => {
+      if (!tale) return;
+      if (voiceBusy() && Date.now() - t0 < 240000) { tale.timer = setTimeout(tick, 250); return; }
+      tale.timer = setTimeout(taleNext, tale.pause * 1000 * (tale.slow ? 1.25 : 1));
+    };
+    tale.timer = setTimeout(tick, 1500);                                        // let the voice begin
+  }
+  function taleEnd() {
+    if (!tale) return;
+    const S = tale.S; clearTimeout(tale.timer);
+    opts.speak = tale.prevSpeak; tale = null; g = null;
+    autoClose = '<div class="tr-advice tr-auto tr-tale"><b>🌙 ' + esc(S.title) + '</b><div class="tr-why tr-nosay">The end. Sleep well.</div></div>';
+    if (tab === 'play' && shown) renderPlay();
+  }
+  function taleStop(quiet) {
+    if (!tale) return;
+    clearTimeout(tale.timer); opts.speak = tale.prevSpeak; tale = null; g = null; hush();
+    if (quiet) return;
+    toast('The story is paused for tonight', '');
+    if (tab === 'play' && shown) renderPlay();
+  }
+  // The table the paragraph describes: the storyteller's cards, the board so far, the pot, how many
+  // are still in. Built once per scene and only drawn, never played.
+  function taleGame(scene) {
+    const S = tale.S, parse = str => String(str || '').trim().split(/\s+/).filter(Boolean).map(c => ({ r: RK.indexOf(c[0]) + 2, s: SU.indexOf(c[1]) }));
+    const sc = { pos: scene.pos || 'BTN', seed: 77, free: true, cards: {} }; sc.cards[sc.pos] = scene.cards || 'As Kd';
+    const G = lessonGame(sc), board = parse(scene.board);
+    G.players[0].name = S.who;
+    G.board = board; G.street = board.length >= 5 ? 3 : board.length === 4 ? 2 : board.length === 3 ? 1 : 0;
+    const live = scene.live == null ? 1 : scene.live;
+    let kept = 0; G.players.forEach((p, j) => { if (!j) return; if (kept < live) { kept++; } else { p.folded = true; } });
+    if (G.street > 0) { G.players.forEach(p => { p.bet = 0; }); G.curBet = 0; }
+    if (scene.pot != null) { const inPot = G.players.reduce((n, p) => n + p.total, 0); G.dead = Math.max(0, scene.pot - inPot); }
+    G.toAct = -1;
+    return G;
+  }
+  function renderTale() {
+    const m = $('trMain'), S = tale.S;
+    let felt = '';
+    if (tale.scene) {
+      if (!tale.g || tale.g._scene !== tale.scene) { try { tale.g = taleGame(tale.scene); tale.g._scene = tale.scene; } catch (e) { console.error('story scene', e); tale.g = null; } }
+      if (tale.g) { const saved = { g, me, room, show: opts.showBots }; g = tale.g; me = 0; room = null; opts.showBots = false; try { felt = feltHtml(); } finally { g = saved.g; me = saved.me; room = saved.room; opts.showBots = saved.show; } }
+    }
+    const left = Math.max(0, Math.round((tale.endAt - Date.now()) / 60000));
+    m.innerHTML = '<div class="tr-room tr-nosay"><b>🌙 ' + esc(S.title) + '</b><span class="tr-dim">' + esc(S.place) + ' · ' + (tale.pass > 1 ? 'told again, slower' : 'tonight’s story') + ' · ' + left + ' min left</span><span style="flex:1"></span><button class="ghost" data-act="play:talestop">⏹ Stop</button></div>'
+      + '<div class="tr-felt-wrap"><div class="tr-felt">' + (felt || '<div class="tr-pot tr-dim" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)">' + esc(S.place) + '</div>') + '</div></div>'
+      + '<div class="tr-dim tr-nosay" style="margin-top:6px">The story is read in a calm voice with a pause between paragraphs' + (tale.passes > 1 ? ', then once more, slower' : '') + '. Lights off; it ends by itself.</div>';
+    const cur = tale.read[tale.read.length - 1] || '', earlier = tale.read.slice(0, -1);
+    setPanel('<div class="tr-advice tr-auto tr-tale tr-nosay"><b>🌙 ' + esc(S.title) + ' · ' + esc(S.place) + '</b><div class="tr-why tr-narrate">' + esc(cur) + '</div>'
+      + (earlier.length ? '<details><summary>So far</summary><div class="tr-why">' + earlier.map(esc).join('<br><br>') + '</div></details>' : '') + '</div>');
+    renderSpot();
   }
   function autoStart() {
     if (room || auto) return;
@@ -2660,10 +2750,10 @@ const Trainer = (() => {
     if (gen !== localGen) return;
     const part = localQ.shift();
     if (!part) { localCur = null; clearInterval(localKeep); localKeep = 0; return; }
-    const v = pickVoice(), calm = autoOn() && auto.calm;        // 🌙 sleep story: unhurried, lower, softer
+    const v = pickVoice(), calm = (autoOn() && auto.calm) || !!tale;        // 🌙 sleep story: unhurried, lower, softer
     const u = new SpeechSynthesisUtterance(part);
     if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-GB';
-    u.rate = calm ? 0.82 : (opts.speakRate || 1); u.pitch = calm ? 0.88 : 1; u.volume = calm ? 0.8 : 1;
+    u.rate = calm ? (tale && tale.slow ? 0.72 : 0.82) : (opts.speakRate || 1); u.pitch = calm ? 0.88 : 1; u.volume = calm ? 0.8 : 1;
     let done = false;
     const finish = () => { if (done) return; done = true; clearTimeout(localTimer); if (gen !== localGen) return; localCur = null; localStarted = false; localTimer = setTimeout(() => localNext(gen), 150); };
     u.onstart = () => { if (gen === localGen) localStarted = true; };
@@ -2703,7 +2793,7 @@ const Trainer = (() => {
   const voiceClipPlaying = () => !!(voiceEl && !voiceEl.paused && !voiceEl.ended && voiceEl.src && voiceEl.src !== SILENT_WAV);
   async function ttsSay(parts) {
     const gen = ++ttsGen; ttsBusy = true;
-    const calm = autoOn() && auto.calm, speed = calm ? 0.85 : (opts.speakRate || 1);
+    const calm = (autoOn() && auto.calm) || !!tale, speed = calm ? (tale && tale.slow ? 0.75 : 0.85) : (opts.speakRate || 1);
     let k = 0;
     try {
       let next = window.api.ttsSpeak({ text: parts[0], speed, calm });              // the next passage is fetched while this one plays
@@ -3289,7 +3379,7 @@ const Trainer = (() => {
   const sayContext = () => tab + '|' + (g ? handKey() : '') + '|' + (drill.ex ? drill.ex.id + '.' + drill.ex.si : '') + '|' + (drill.replay ? drill.replay.rec.id : '');
   function markSaid(t) { const key = sayContext(); if (key !== saidKey) { saidKey = key; said = new Set(); } sentencesOf(t).forEach(x => said.add(x)); }
   function autoSpeak(text) {
-    if (!opts.speak || !CAN_SPEAK || (sleepAudio && !sleepAudio.paused)) return;
+    if (!opts.speak || !CAN_SPEAK || tale || (sleepAudio && !sleepAudio.paused)) return;
     clearTimeout(speakTimer);
     speakTimer = setTimeout(() => {
       if (text != null) {                                         // a drill answer: read it once
@@ -3358,6 +3448,7 @@ const Trainer = (() => {
   }
   function renderPlay() {
     const m = $('trMain');
+    if (tale) return renderTale();
     setPanel('');
     if (!g) {
       if (room) {
@@ -3374,9 +3465,9 @@ const Trainer = (() => {
         + '<div class="tr-row"><button data-act="play:next">🃏 Play cash hands against the bots</button>' + AUTO_BTN + '</div>'
         + '<div class="tr-q" style="margin-top:4px">🎬 <b>Watch the Angel play</b> — sit back while the Angel plays hand after hand in your seat: every card face up, every move (its own and the bots’) explained beside the player and in the column on the right, with the bet sizes and the strategy behind them' + (CAN_SPEAK ? ', read aloud as it goes' : '') + '. Press Stop whenever you want the seat back.</div>'
         + '<div class="tr-row">' + autoOptsHtml() + '</div>'
-        + '<div class="tr-q tr-sleep" style="margin-top:8px">🌙 <b>Sleep story</b> — the Angel plays a quiet table in a calm, unhurried voice, explaining every hand, and closes softly when the time is up. Each night’s story is about one strategy, in turn, at a table chosen for it. Lights off, press one:'
+        + '<div class="tr-q tr-sleep" style="margin-top:8px">🌙 <b>Sleep story</b> — a bedtime story read slowly in a calm voice: one night in a card room somewhere in the world, one player, one habit of good poker woven through it, and a soft end. Twelve stories, told in turn; the table shows the hand in the story. Lights off, press one:'
         + '<div class="tr-row">' + [20, 30, 45, 60].map(m => '<button class="ghost" data-act="play:sleep" data-v="' + m + '">🌙 ' + m + ' minutes</button>').join('') + '</div>'
-        + '<div class="tr-row"><label class="tr-dim">Tonight: <select data-sel="storyPick" style="width:auto"><option value=""' + (opts.storyPick ? '' : ' selected') + '>next in turn — ' + esc(storyAhead().title) + ' · ' + esc(storyAhead().place) + '</option>' + STORY_THEMES.map(t => '<option value="' + t.id + '"' + (opts.storyPick === t.id ? ' selected' : '') + '>' + esc(t.title) + ' · ' + esc(t.place) + '</option>').join('') + '</select></label></div></div>'
+        + '<div class="tr-row"><label class="tr-dim">Tonight: <select data-sel="storyPick" style="width:auto"><option value=""' + (opts.storyPick ? '' : ' selected') + '>next in turn — ' + esc(storyNext().title) + ' · ' + esc(storyNext().place) + '</option>' + STORIES.map(t => '<option value="' + t.id + '"' + (opts.storyPick === t.id ? ' selected' : '') + '>' + esc(t.title) + ' · ' + esc(t.place) + '</option>').join('') + '</select></label></div></div>'
         + '<div class="tr-q" style="margin-top:8px"><b>🏆 Tournament</b> — a sit-and-go against the bots: blinds rise, the big blind posts an ante (as at the WSOP), players are knocked out and the top places are paid. Once stacks are short, every shove, fold and call is graded in prize money (ICM) next to the chip-only answer.</div>'
         + tourOptsHtml() + '<div class="tr-row"><button data-act="tour:start">🏆 Start a tournament</button></div>'
         + '<div class="tr-q" style="margin-top:8px"><b>Play with friends</b> — over the internet, everyone graded, everyone learning together — or, with the box below ticked, just a game. ' + (IN_BROWSER ? 'Friends open this same page — nothing to install.' : 'Each friend needs Poker Angel.') + '</div>'
@@ -3439,6 +3530,7 @@ const Trainer = (() => {
   }
   function renderSpot() {
     const el = $('trSpot'); if (!el) return;
+    if (tale) { el.innerHTML = '<b>🌙 ' + esc(tale.S.title) + '</b><br>' + esc(tale.S.place) + '<br><span class="tr-dim">' + esc(tale.S.who) + '’s night, told at a walking pace.</span>'; return; }
     if (tab !== 'play' || !g) { el.innerHTML = '<b>Coach</b><br>' + (tab === 'play' ? (room ? (room.plain ? 'Just a game — no grades, no coaching.' : 'Grades for the whole table appear below.') : 'Deal a hand to start.') : 'Answers and explanations appear below.'); return; }
     const T = g.tour, lines = [];
     if (T) {
@@ -4262,6 +4354,7 @@ const Trainer = (() => {
       if (v === 'auto') return autoStart();
       if (v === 'sleep') return sleepStory(+b.dataset.v || 30, true);
       if (v === 'autostop') return autoStop();
+      if (v === 'talestop') return taleStop();
       if (v === 'autospeed') { opts.autoSpeed = b.dataset.v; saveOpts(); if (auto) auto.speed = opts.autoSpeed; renderPlay(); return; }
       if (v === 'automins') { opts.autoMins = +b.dataset.v || 0; saveOpts(); if (auto) auto.endAt = opts.autoMins ? auto.t0 + opts.autoMins * 60000 : 0; renderPlay(); return; }
       if (v === 'wnext' || v === 'wall') return watchPlay(v === 'wall');
@@ -4438,7 +4531,7 @@ const Trainer = (() => {
   function voiceChanged() { Promise.all([loadVoiceCfg(), loadLib()]).then(() => { if (HAS_LIB && !inbox) inboxOpen(); ttsFails = 0; stockVoices = null; chatterSchedule(); if (shown && tab === 'play') renderPlay(); }); }
   return {
     wire, open, close, voiceChanged, voiceLabel, sleepStory,
-    _engine: { STORY_THEMES, nextTheme, storyHero, parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech, storyHtml, levelWhy, COACH_LEVELS, rangeSetFor, tableLessonScore, FIELDS, whatIf, closeSitting, gradeShortCash, mulberry, goalsToday, setStatsForTest: v => { Object.assign(stats, v); }, setFieldForTest: v => { const p = opts.field; opts.field = v; return p; }, candidates, thresholds, pickBest, inPosition, primerHtml, HAND_RANKS, rankOf, adviceForSpot, gradeForSpot, recordCoached, levelWhyFor: levelWhy, REMARKS, pickRemark, INVITE, VOICE_PARA, VOICE_PARA2, TALK_LEVELS, TALK_SYSTEM, setLevelForTest: v => { opts.level = v; } },
+    _engine: { STORY_THEMES, nextTheme, storyHero, STORIES, talePlan, parseRange, chart, chartWidth, cls, pct, combos, tierOn, draws, handName, equityVsRanges, newGame, newHand, legal, act, settle, botDecide, preflopAdvice, gradePre, gradePost, spot, historyText, potTotal, posOf, newTournament, tourIcm, shortSpot, gradeShort, pfTable, mulberry, LESSON_HANDS, lessonGame, autoTo, bestKind, plain, detailFor, POS, bluffMoment, gearOf, forSpeech, storyHtml, levelWhy, COACH_LEVELS, rangeSetFor, tableLessonScore, FIELDS, whatIf, closeSitting, gradeShortCash, mulberry, goalsToday, setStatsForTest: v => { Object.assign(stats, v); }, setFieldForTest: v => { const p = opts.field; opts.field = v; return p; }, candidates, thresholds, pickBest, inPosition, primerHtml, HAND_RANKS, rankOf, adviceForSpot, gradeForSpot, recordCoached, levelWhyFor: levelWhy, REMARKS, pickRemark, INVITE, VOICE_PARA, VOICE_PARA2, TALK_LEVELS, TALK_SYSTEM, setLevelForTest: v => { opts.level = v; } },
   };
 })();
 
