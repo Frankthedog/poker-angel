@@ -3296,7 +3296,7 @@ const Trainer = (() => {
   const sayContext = () => tab + '|' + (g ? handKey() : '') + '|' + (drill.ex ? drill.ex.id + '.' + drill.ex.si : '') + '|' + (drill.replay ? drill.replay.rec.id : '');
   function markSaid(t) { const key = sayContext(); if (key !== saidKey) { saidKey = key; said = new Set(); } sentencesOf(t).forEach(x => said.add(x)); }
   function autoSpeak(text) {
-    if (!opts.speak || !CAN_SPEAK || tale || (sleepAudio && !sleepAudio.paused)) return;
+    if (!opts.speak || !CAN_SPEAK || tale) return;
     clearTimeout(speakTimer);
     speakTimer = setTimeout(() => {
       if (text != null) {                                         // a drill answer: read it once
@@ -3382,9 +3382,7 @@ const Trainer = (() => {
         + '<div class="tr-row"><button data-act="play:next">🃏 Play cash hands against the bots</button>' + AUTO_BTN + '</div>'
         + '<div class="tr-q" style="margin-top:4px">🎬 <b>Watch the Angel play</b> — sit back while the Angel plays hand after hand in your seat: every card face up, every move (its own and the bots’) explained beside the player and in the column on the right, with the bet sizes and the strategy behind them' + (CAN_SPEAK ? ', read aloud as it goes' : '') + '. Press Stop whenever you want the seat back.</div>'
         + '<div class="tr-row">' + autoOptsHtml() + '</div>'
-        + '<div class="tr-q tr-sleep" style="margin-top:8px">🌙 <b>Sleep story</b> — a bedtime story read slowly in a calm voice: one night in a card room somewhere in the world, one player, one habit of good poker woven through it, and a soft end. Twelve stories, told in turn; the table shows the hand in the story. Lights off, press one:'
-        + '<div class="tr-row">' + [20, 30, 45, 60].map(m => '<button class="ghost" data-act="play:sleep" data-v="' + m + '">🌙 ' + m + ' minutes</button>').join('') + '</div>'
-        + '<div class="tr-row"><label class="tr-dim">Tonight: <select data-sel="storyPick" style="width:auto"><option value=""' + (opts.storyPick ? '' : ' selected') + '>next in turn — ' + esc(storyNext().title) + ' · ' + esc(storyNext().place) + '</option>' + STORIES.map(t => '<option value="' + t.id + '"' + (opts.storyPick === t.id ? ' selected' : '') + '>' + esc(t.title) + ' · ' + esc(t.place) + '</option>').join('') + '</select></label></div></div>'
+        + sleepHtml()
         + '<div class="tr-q" style="margin-top:8px"><b>🏆 Tournament</b> — a sit-and-go against the bots: blinds rise, the big blind posts an ante (as at the WSOP), players are knocked out and the top places are paid. Once stacks are short, every shove, fold and call is graded in prize money (ICM) next to the chip-only answer.</div>'
         + tourOptsHtml() + '<div class="tr-row"><button data-act="tour:start">🏆 Start a tournament</button></div>'
         + '<div class="tr-q" style="margin-top:8px"><b>Play with friends</b> — over the internet, everyone graded, everyone learning together — or, with the box below ticked, just a game. ' + (IN_BROWSER ? 'Friends open this same page — nothing to install.' : 'Each friend needs Poker Angel.') + '</div>'
@@ -4141,42 +4139,22 @@ const Trainer = (() => {
   }
 
   // ---- 🌙 sleep story ----
-  // A 20-minute recording (audio/sleep-story.mp3). One player for the whole page, so it keeps playing
-  // when the Learn tab is re-drawn or you switch tabs.
-  let sleepAudio = null;
-  const mmss = t => Math.floor(t / 60) + ':' + String(Math.floor(t % 60)).padStart(2, '0');
-  function sleepUi() {
-    const a = sleepAudio, btn = document.querySelector('[data-act="sleep:play"]'), pos = $('trSleepPos');
-    const playing = a && !a.paused && !a.ended;
-    if (btn) btn.textContent = playing ? '⏸ Pause' : a && a.currentTime > 0 && !a.ended ? '▶ Carry on' : '▶ Play';
-    if (pos) pos.textContent = a && a.duration ? mmss(a.currentTime) + ' of ' + mmss(a.duration) : '20 minutes';
-  }
-  function sleepAct(v) {
-    if (!sleepAudio) {
-      sleepAudio = new Audio('audio/sleep-story.mp3');
-      ['timeupdate', 'play', 'pause', 'ended', 'loadedmetadata'].forEach(e => sleepAudio.addEventListener(e, sleepUi));
-      sleepAudio.addEventListener('error', () => toast('The sleep story couldn’t be played', 'red'));
-    }
-    if (v === 'play') { if (sleepAudio.paused || sleepAudio.ended) { hush(); sleepAudio.play().catch(e => console.error('sleep story', e)); } else sleepAudio.pause(); }
-    if (v === 'stop') { sleepAudio.pause(); sleepAudio.currentTime = 0; }
-    sleepUi();
-  }
-  function sleepCard() {
-    return '<div class="tr-q tr-sleep"><b>🌙 Sleep story: The Quiet Table</b> <span class="tr-dim">· about 20 minutes</span><br>'
-      + '<span class="tr-dim">A calm bedtime story, read slowly, that carries the habits of good players — patience, folding without regret, position, watching how others play, betting your good hands, and letting bad luck pass. Play it in bed with the screen off. The file is also in the Poker Angel folder to copy to your phone.</span>'
-      + '<div class="tr-row"><button data-act="sleep:play">▶ Play</button><button class="ghost" data-act="sleep:stop">⏹ Stop</button><span class="tr-dim" id="trSleepPos">about 20 minutes</span></div>'
-      + '<div class="tr-dim">For a different story every night — position, patience, pot odds, value betting, bluffing, short stacks and more, told over live hands — use the 🌙 Sleep story buttons under 🃏 Play.</div></div>';
+  // The one sleep story in the app: the twelve written stories, read by the voice (sleepStory above).
+  // Offered under 🃏 Play and at the top of 📖 Learn, the same buttons in both places.
+  function sleepHtml() {
+    return '<div class="tr-q tr-sleep" style="margin-top:8px">🌙 <b>Sleep story</b> — a bedtime story read slowly in a calm voice: one night in a card room somewhere in the world, one player, one habit of good poker woven through it, and a soft end. Twelve stories, told in turn; the table shows the hand in the story. Lights off, press one:'
+        + '<div class="tr-row">' + [20, 30, 45, 60].map(m => '<button class="ghost" data-act="play:sleep" data-v="' + m + '">🌙 ' + m + ' minutes</button>').join('') + '</div>'
+        + '<div class="tr-row"><label class="tr-dim">Tonight: <select data-sel="storyPick" style="width:auto"><option value=""' + (opts.storyPick ? '' : ' selected') + '>next in turn — ' + esc(storyNext().title) + ' · ' + esc(storyNext().place) + '</option>' + STORIES.map(t => '<option value="' + t.id + '"' + (opts.storyPick === t.id ? ' selected' : '') + '>' + esc(t.title) + ' · ' + esc(t.place) + '</option>').join('') + '</select></label></div></div>';
   }
   function renderLearn() {
     if (drill.ex) return renderExample();
     const L = lessons(), open = drill.learnOpen || 'basics';
-    $('trMain').innerHTML = '<div class="tr-drill tr-learn">' + sleepCard() + '<div class="tr-q"><b>Learn the betting strategy</b><br><span class="tr-dim">Short lessons in order. The trainer grades you against exactly these rules.</span></div>'
+    $('trMain').innerHTML = '<div class="tr-drill tr-learn">' + sleepHtml() + '<div class="tr-q"><b>Learn the betting strategy</b><br><span class="tr-dim">Short lessons in order. The trainer grades you against exactly these rules.</span></div>'
       + L.map((x, i) => '<details' + (x.id === open ? ' open' : '') + ' data-lesson="' + x.id + '"><summary><span class="tr-lnum">' + (i + 1) + '</span>' + esc(x.title) + '</summary><div class="tr-lbody">' + x.body
         + '<div class="tr-row">' + (LESSON_HANDS[x.id] ? '<button class="primary" data-act="ex:start:' + x.id + '">▶ Play the example hand' + (LESSON_HANDS[x.id].length > 1 ? 's' : '') + '</button>' : '')
         + (x.practice ? '<button class="ghost" data-act="learn:' + x.practice[0] + '">Practise: ' + esc(x.practice[1]) + '</button>' : '') + '</div></div></details>').join('')
       + '</div>';
     $('trMain').querySelectorAll('details').forEach(d => d.addEventListener('toggle', () => { if (d.open) drill.learnOpen = d.dataset.lesson; }));
-    sleepUi();
   }
 
   // ---- charts & stats ----
@@ -4283,7 +4261,6 @@ const Trainer = (() => {
     },
     learn: v => {
       if (v.indexOf('table:') === 0) { opts.field = v.slice(6); saveOpts(); freshTable(); setTab('play'); startHand(); toast(FIELDS[opts.field].name, 'green'); return; } drill.ex = null; setTab(v); },
-    sleep: v => sleepAct(v),
     ui: v => {
       if (v === 'detail') { opts.detail = !opts.detail; saveOpts(); renderMain(); }
       if (v === 'speak') { const t = forSpeech(panelText()); markSaid(t); speak(t); }

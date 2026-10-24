@@ -314,7 +314,7 @@
 
 <header class="top">
   <div class="brand"><span class="mk" aria-hidden="true"><svg viewBox="0 0 512 512"><ellipse cx="256" cy="112" rx="118" ry="34" fill="none" stroke="#fff" stroke-width="30"/><path d="M256 160 C 214 222, 112 262, 112 336 C 112 392, 170 420, 222 388 C 214 420, 198 444, 174 456 L 338 456 C 314 444, 298 420, 290 388 C 342 420, 400 392, 400 336 C 400 262, 298 222, 256 160 Z" fill="#0f172a"/></svg></span>
-    <div>Poker Angel Trainer<small><span id="paBuild">v1.31.1.hsgdi</span> · Play, get graded, study — together</small></div></div>
+    <div>Poker Angel Trainer<small><span id="paBuild">v1.31.2.hsgfq</span> · Play, get graded, study — together</small></div></div>
 </header>
 
 <section id="trainer" aria-hidden="true">
@@ -345,21 +345,21 @@
   // published, reload onto it (GitHub's site caches pages for ten minutes; phones cache longer).
   (function () {
     try {
-      if (!/github.io$/i.test(location.hostname) || sessionStorage.getItem('paRefreshed') === '1.31.1.hsgdi') return;
-      sessionStorage.setItem('paRefreshed', '1.31.1.hsgdi');
+      if (!/github.io$/i.test(location.hostname) || sessionStorage.getItem('paRefreshed') === '1.31.2.hsgfq') return;
+      sessionStorage.setItem('paRefreshed', '1.31.2.hsgfq');
       fetch(location.pathname + '?b=' + Date.now(), { cache: 'no-store' }).then(r => r.text()).then(t => {
         const m = /id="paBuild">v([^<]+)</.exec(t);
-        if (m && m[1] !== '1.31.1.hsgdi') location.replace(location.pathname + '?fresh=' + encodeURIComponent(m[1]));
+        if (m && m[1] !== '1.31.2.hsgfq') location.replace(location.pathname + '?fresh=' + encodeURIComponent(m[1]));
       }).catch(() => {});
     } catch (e) {}
   })();
 </script>
-<script src="logic-poker.js?v=1.31.1.hsgdi"></script>
-<script src="pushfold-data.js?v=1.31.1.hsgdi"></script>
-<script src="pushfold.js?v=1.31.1.hsgdi"></script>
-<script src="stories.js?v=1.31.1.hsgdi"></script>
-<script src="vendor/peerjs.min.js?v=1.31.1.hsgdi"></script>
-<script src="trainer.js?v=1.31.1.hsgdi"></script>
+<script src="logic-poker.js?v=1.31.2.hsgfq"></script>
+<script src="pushfold-data.js?v=1.31.2.hsgfq"></script>
+<script src="pushfold.js?v=1.31.2.hsgfq"></script>
+<script src="stories.js?v=1.31.2.hsgfq"></script>
+<script src="vendor/peerjs.min.js?v=1.31.2.hsgfq"></script>
+<script src="trainer.js?v=1.31.2.hsgfq"></script>
 <script>
   Trainer.wire();
   Trainer.open();
