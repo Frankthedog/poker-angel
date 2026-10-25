@@ -1612,13 +1612,32 @@ const Trainer = (() => {
   // the best bedtime stories are told. The felt shows the hand the storyteller is holding, when the
   // paragraph has one. Stories come in turn (opts.storyDone), or the one picked for tonight.
   const storyNext = () => STORIES.find(x => x.id === storyAhead().id) || STORIES[0];
-  // How to fit a story to the minutes asked for: one reading or two, and the pause between paragraphs.
-  // A calm reading runs at about 100 words a minute; the second, slower one takes about 15% longer.
+  // How to fit a story to the minutes asked for: how many tellings (one to three), and the pause between
+  // paragraphs. A calm reading runs at about 100 words a minute; each telling after the first is slower,
+  // about 15% longer. The pause is never more than a breath or two (2.5–7 s): a long silence sounds like
+  // the story has stopped. Time left over is simply left over — the story ends by itself, and the
+  // minutes asked for are the most it will run, not the least.
   function talePlan(words, paras, mins) {
     const target = Math.max(5, Number(mins) || 20) * 60, one = words / 100 * 60;
-    const passes = target >= one * 1.6 ? 2 : 1, speech = passes === 2 ? one * 2.15 : one;
-    const pause = Math.max(2.5, Math.min(20, (target - speech) / Math.max(1, paras * passes)));
+    const passes = Math.max(1, Math.min(3, Math.floor(target / (one * 1.1 + paras * 5) + 0.6)));   // leaning towards filling the time
+    const speech = one + (passes - 1) * one * 1.15;
+    const pause = Math.max(2.5, Math.min(7, (target - speech) / Math.max(1, paras * passes)));
     return { passes, pause: Math.round(pause * 10) / 10, one: Math.round(one) };
+  }
+  // Stay awake while a story (or the Angel's run) plays: on the PC a power-save blocker (the screen may go
+  // off, the PC must not sleep); in a browser the Screen Wake Lock — a phone stops speaking the moment its
+  // screen locks, so the screen stays on (turn the brightness down) and the lock is asked for again
+  // whenever the page comes back to the front.
+  let wakeLock = null, wakeWant = false;
+  async function wakeAsk() {
+    if (!wakeWant || wakeLock || document.visibilityState !== 'visible' || !navigator.wakeLock) return;
+    try { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); } catch (e) { wakeLock = null; }
+  }
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { if (wakeWant) wakeAsk(); });
+  function keepAwake(on) {
+    wakeWant = !!on;
+    if (window.api && window.api.keepAwake) { window.api.keepAwake(wakeWant).catch(() => {}); return; }
+    if (wakeWant) wakeAsk(); else if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
   }
   let tale = null;   // { S, i, pass, passes, pause, slow, endAt, timer, scene, g, prevSpeak }
   function sleepStory(mins, calm, storyId) {
@@ -1631,7 +1650,7 @@ const Trainer = (() => {
     const runMins = Math.max(5, Math.round(Number(mins) || 0) || 20);
     const words = S.paras.reduce((n, p) => n + p.t.split(/\s+/).length, 0), plan = talePlan(words, S.paras.length, runMins);
     tale = { S, i: -1, pass: 1, passes: plan.passes, pause: plan.pause, slow: false, endAt: Date.now() + runMins * 60000, timer: 0, scene: null, g: null, prevSpeak: opts.speak, read: [] };
-    opts.speak = true;
+    opts.speak = true; keepAwake(true);
     freshTable(); spokenLast = ''; said = new Set();
     if (!shown) open();
     setTab('play');
@@ -1646,7 +1665,7 @@ const Trainer = (() => {
       if (tale.pass < tale.passes && Date.now() < tale.endAt - 90000) { tale.pass++; tale.i = 0; tale.slow = true; tale.read = []; }
       else return taleEnd();
     }
-    if (tale.pass > 1 && Date.now() >= tale.endAt) return taleEnd();          // the time is up: the second telling stops at the end of a paragraph
+    if (tale.pass > 1 && Date.now() >= tale.endAt) return taleEnd();          // the time is up: a retelling stops at the end of a paragraph
     const p = tale.S.paras[tale.i];
     if (p.scene) tale.scene = p.scene;
     tale.read.push(p.t);
@@ -1663,13 +1682,13 @@ const Trainer = (() => {
   function taleEnd() {
     if (!tale) return;
     const S = tale.S; clearTimeout(tale.timer);
-    opts.speak = tale.prevSpeak; tale = null; g = null;
+    opts.speak = tale.prevSpeak; tale = null; g = null; keepAwake(false);
     autoClose = '<div class="tr-advice tr-auto tr-tale"><b>🌙 ' + esc(S.title) + '</b><div class="tr-why tr-nosay">The end. Sleep well.</div></div>';
     if (tab === 'play' && shown) renderPlay();
   }
   function taleStop(quiet) {
     if (!tale) return;
-    clearTimeout(tale.timer); opts.speak = tale.prevSpeak; tale = null; g = null; hush();
+    clearTimeout(tale.timer); opts.speak = tale.prevSpeak; tale = null; g = null; hush(); keepAwake(false);
     if (quiet) return;
     toast('The story is paused for tonight', '');
     if (tab === 'play' && shown) renderPlay();
@@ -1699,7 +1718,7 @@ const Trainer = (() => {
     const left = Math.max(0, Math.round((tale.endAt - Date.now()) / 60000));
     m.innerHTML = '<div class="tr-room tr-nosay"><b>🌙 ' + esc(S.title) + '</b><span class="tr-dim">' + esc(S.place) + ' · ' + (tale.pass > 1 ? 'told again, slower' : 'tonight’s story') + ' · ' + left + ' min left</span><span style="flex:1"></span><button class="ghost" data-act="play:talestop">⏹ Stop</button></div>'
       + '<div class="tr-felt-wrap"><div class="tr-felt">' + (felt || '<div class="tr-pot tr-dim" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)">' + esc(S.place) + '</div>') + '</div></div>'
-      + '<div class="tr-dim tr-nosay" style="margin-top:6px">The story is read in a calm voice with a pause between paragraphs' + (tale.passes > 1 ? ', then once more, slower' : '') + '. Lights off; it ends by itself.</div>';
+      + '<div class="tr-dim tr-nosay" style="margin-top:6px">The story is read in a calm voice with a breath between paragraphs' + (tale.passes > 2 ? ', then again, slower, while the time lasts' : tale.passes > 1 ? ', then once more, slower' : '') + '. ' + (IN_BROWSER ? 'The screen stays on so the voice keeps going — turn the brightness down. Locking the phone stops it.' : 'Lights off; the PC stays awake until the end.') + '</div>';
     const cur = tale.read[tale.read.length - 1] || '', earlier = tale.read.slice(0, -1);
     setPanel('<div class="tr-advice tr-auto tr-tale tr-nosay"><b>🌙 ' + esc(S.title) + ' · ' + esc(S.place) + '</b><div class="tr-why tr-narrate">' + esc(cur) + '</div>'
       + (earlier.length ? '<details><summary>So far</summary><div class="tr-why">' + earlier.map(esc).join('<br><br>') + '</div></details>' : '') + '</div>');
@@ -1710,6 +1729,7 @@ const Trainer = (() => {
     auto = { speed: opts.autoCalm ? 'slow' : (opts.autoSpeed || 'normal'), timer: 0, prevSpeak: opts.speak, t0: Date.now(),
       endAt: opts.autoMins ? Date.now() + opts.autoMins * 60000 : 0, calm: !!opts.autoCalm, hands: 0, lessons: [], lesson: '', intro: true, done: false };
     if (CAN_TALK()) opts.speak = true;
+    keepAwake(true);
     spokenLast = ''; said = new Set(); ackId = null; token++;
     if (!g || g.over) { if (g && g.tour && g.tour.done) freshTable(); startHand(); }
     if (g && g.players[me]) g.players[me].name = 'Angel';
@@ -1719,7 +1739,7 @@ const Trainer = (() => {
   function autoStop(silent) {
     if (!auto) return;
     clearTimeout(auto.timer);
-    opts.speak = auto.prevSpeak; auto = null; hush(); token++;
+    opts.speak = auto.prevSpeak; auto = null; hush(); token++; keepAwake(false);
     if (g && g.players[me] && g.players[me].name === 'Angel') g.players[me].name = 'You';
     if (silent) return;
     toast('The seat is yours again', '');
@@ -2734,7 +2754,7 @@ const Trainer = (() => {
     const t = forSpeech(text); if (!t) return;
     ttsStop(); pcStop(); localStop();
     if (chatterGain) { try { chatterGain.gain.setTargetAtTime(0.35, actx.currentTime, 0.1); chatterGain.gain.setTargetAtTime(1, actx.currentTime + 2.5, 1.5); } catch (e) {} }
-    if (HAS_TTS() && ttsFails < 3) ttsSay(passages(t, voiceCfg.engine === 'own' ? 170 : 500)); else if (pcVoiceOn()) pcSay(passages(t, 170)); else speakLocal(passages(t, autoOn() && auto.calm ? 150 : 200));   // the own engine: a sentence or two at a time, so the first words come quickly while the rest is made
+    if (HAS_TTS() && ttsFails < 3) ttsSay(passages(t, voiceCfg.engine === 'own' ? 170 : 500)); else if (pcVoiceOn()) pcSay(passages(t, 170)); else speakLocal(passages(t, (autoOn() && auto.calm) || tale ? 150 : 200));   // the own engine: a sentence or two at a time, so the first words come quickly while the rest is made
   }
   function hush() { ttsStop(); pcStop(); localStop(); }
   // ---- a voice on your PC, used from the web page (phone) ----
@@ -3204,7 +3224,7 @@ const Trainer = (() => {
   async function chatterTick() {
     if (!chatterOn()) return;
     try {
-      if (!shown || tab !== 'play' || !g || voiceBusy() || chatterBusy || (opts.chatterQuiet !== false && !g.over && g.toAct === me)) return;
+      if (!shown || tab !== 'play' || !g || tale || voiceBusy() || chatterBusy || (opts.chatterQuiet !== false && !g.over && g.toAct === me)) return;
       if (!stockVoices) { try { stockVoices = (await window.api.ttsVoices()).filter(v => !v.own); } catch (e) { stockVoices = []; } }
       const cands = chatterCandidates(); if (!cands.length) { talkEvents = []; return; }
       talkEvents = talkEvents.filter(ev => Date.now() - ev.at < 12000);
