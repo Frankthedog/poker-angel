@@ -1655,6 +1655,7 @@ const Trainer = (() => {
     if (!shown) open();
     setTab('play');
     toast('🌙 ' + S.title + ' — ' + S.place + '. Press ⏹ whenever you like.', 'green');
+    if (storyVoiceId() && window.api.ownStatus) window.api.ownStatus().then(st => { if (tale && !st.running) toast('The storyteller’s voice is waking up — the first words come in a moment', ''); }).catch(() => {});
     taleNext();
   }
   function taleNext() {
