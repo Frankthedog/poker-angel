@@ -1614,14 +1614,14 @@ const Trainer = (() => {
   const storyNext = () => STORIES.find(x => x.id === storyAhead().id) || STORIES[0];
   // How to fit a story to the minutes asked for: how many tellings (one to three), and the pause between
   // paragraphs. A calm reading runs at about 100 words a minute; each telling after the first is slower,
-  // about 15% longer. The pause is never more than a breath or two (2.5–7 s): a long silence sounds like
+  // about 15% longer. The pause is never more than a breath or two (1.5–4 s): a long silence sounds like
   // the story has stopped. Time left over is simply left over — the story ends by itself, and the
   // minutes asked for are the most it will run, not the least.
   function talePlan(words, paras, mins) {
     const target = Math.max(5, Number(mins) || 20) * 60, one = words / 100 * 60;
     const passes = Math.max(1, Math.min(3, Math.floor(target / (one * 1.1 + paras * 5) + 0.6)));   // leaning towards filling the time
     const speech = one + (passes - 1) * one * 1.15;
-    const pause = Math.max(2.5, Math.min(7, (target - speech) / Math.max(1, paras * passes)));
+    const pause = Math.max(1.5, Math.min(4, (target - speech) / Math.max(1, paras * passes)));
     return { passes, pause: Math.round(pause * 10) / 10, one: Math.round(one) };
   }
   // Stay awake while a story (or the Angel's run) plays: on the PC a power-save blocker (the screen may go
@@ -1671,6 +1671,11 @@ const Trainer = (() => {
     tale.read.push(p.t);
     if (tab === 'play' && shown) renderPlay(); else renderSpot();
     speak(p.t);
+    const sv = storyVoiceId();                                                  // the next paragraph is made while this one is read, so it starts the moment the breath ends
+    if (sv && window.api && window.api.ttsSpeak) {
+      const nx = tale.S.paras[tale.i + 1] || (tale.pass < tale.passes ? tale.S.paras[0] : null), slowNext = tale.slow || (!tale.S.paras[tale.i + 1] && tale.pass < tale.passes);
+      if (nx) passages(forSpeech(nx.t), 700).forEach(x => window.api.ttsSpeak({ text: x, speed: slowNext ? 0.75 : 0.85, calm: true, voice: sv }).catch(() => {}));
+    }
     const t0 = Date.now();
     const tick = () => {
       if (!tale) return;
@@ -2643,7 +2648,12 @@ const Trainer = (() => {
   async function loadVoiceCfg() {
     if (!window.api || !window.api.getConfig) return;
     try { const c = await window.api.getConfig(); voiceCfg = { engine: c.ttsEngine || 'local', hasTtsKey: !!c.hasTtsKey, ttsVoice: c.ttsVoice || '', ttsVoiceName: c.ttsVoiceName || '' }; } catch (e) {}
+    if (window.api.ownNatural) { try { naturalVoices = (await window.api.ownNatural()) || []; } catch (e) { naturalVoices = []; } }
   }
+  // Natural voices on this PC (Piper, through the own engine): [{ id, name, about }]. A sleep story is read
+  // by one of them when there is one — opts.storyVoice, else the first — unless 'usual' is chosen.
+  let naturalVoices = [];
+  const storyVoiceId = () => { if (!naturalVoices.length || opts.storyVoice === 'usual' || !(window.api && window.api.ttsSpeak)) return ''; const v = naturalVoices.find(x => x.id === opts.storyVoice) || naturalVoices[0]; return v ? v.id : ''; };
   const HAS_TTS = () => !!(window.api && window.api.ttsSpeak) && ((voiceCfg.engine === 'eleven' && voiceCfg.hasTtsKey) || voiceCfg.engine === 'own') && !!voiceCfg.ttsVoice;
   const CAN_TALK = () => CAN_SPEAK || HAS_TTS() || pcVoiceOn();
   const localVoices = () => { try { return CAN_SPEAK ? speechSynthesis.getVoices() : []; } catch (e) { return []; } };
@@ -2728,15 +2738,15 @@ const Trainer = (() => {
   const blobUrl = (mime, b64) => { const bin = atob(b64), u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); return URL.createObjectURL(new Blob([u8], { type: mime })); };
   function ttsStop() { ttsGen++; ttsBusy = false; if (ttsAudio) { try { ttsAudio.pause(); } catch (e) {} ttsAudio = null; } }
   const voiceClipPlaying = () => !!(voiceEl && !voiceEl.paused && !voiceEl.ended && voiceEl.src && voiceEl.src !== SILENT_WAV);
-  async function ttsSay(parts) {
+  async function ttsSay(parts, voice) {
     const gen = ++ttsGen; ttsBusy = true;
     const calm = (autoOn() && auto.calm) || !!tale, speed = calm ? (tale && tale.slow ? 0.75 : 0.85) : (opts.speakRate || 1);
     let k = 0;
     try {
-      let next = window.api.ttsSpeak({ text: parts[0], speed, calm });              // the next passage is fetched while this one plays
+      let next = window.api.ttsSpeak({ text: parts[0], speed, calm, voice });       // the next passage is fetched while this one plays
       for (k = 0; k < parts.length; k++) {
         const r = await next; if (gen !== ttsGen) return;
-        next = k + 1 < parts.length ? window.api.ttsSpeak({ text: parts[k + 1], speed, calm }) : null;
+        next = k + 1 < parts.length ? window.api.ttsSpeak({ text: parts[k + 1], speed, calm, voice }) : null;
         if (!r) continue;
         ttsAudio = voiceEl; await playVoiceClip(r.mime, r.b64);
         if (gen !== ttsGen) return;
@@ -2754,7 +2764,9 @@ const Trainer = (() => {
     const t = forSpeech(text); if (!t) return;
     ttsStop(); pcStop(); localStop();
     if (chatterGain) { try { chatterGain.gain.setTargetAtTime(0.35, actx.currentTime, 0.1); chatterGain.gain.setTargetAtTime(1, actx.currentTime + 2.5, 1.5); } catch (e) {} }
-    if (HAS_TTS() && ttsFails < 3) ttsSay(passages(t, voiceCfg.engine === 'own' ? 170 : 500)); else if (pcVoiceOn()) pcSay(passages(t, 170)); else speakLocal(passages(t, (autoOn() && auto.calm) || tale ? 150 : 200));   // the own engine: a sentence or two at a time, so the first words come quickly while the rest is made
+    const sv = tale && ttsFails < 3 ? storyVoiceId() : '';
+    if (sv) ttsSay(passages(t, 700), sv);                                       // 🌙 a story: whole paragraphs to the natural voice, which answers faster than it speaks
+    else if (HAS_TTS() && ttsFails < 3) ttsSay(passages(t, voiceCfg.engine === 'own' ? (/^piper_/.test(voiceCfg.ttsVoice) ? 700 : 170) : 500)); else if (pcVoiceOn()) pcSay(passages(t, 170)); else speakLocal(passages(t, tale ? 400 : autoOn() && auto.calm ? 150 : 200));   // the own (cloned) engine: a sentence or two at a time, so the first words come quickly while the rest is made
   }
   function hush() { ttsStop(); pcStop(); localStop(); }
   // ---- a voice on your PC, used from the web page (phone) ----
@@ -2798,12 +2810,13 @@ const Trainer = (() => {
   const voiceBusy = () => ttsBusy || pcBusy || voiceClipPlaying() || localSpeaking();
   const voiceQueued = () => !ttsBusy && !!localCur && !localStarted;          // the device's voice has a passage it hasn't begun
   // The voice picker under the table: this PC's voices (and a Try button), or the ElevenLabs voice from ⚙ Settings.
+  const naturalGroup = () => naturalVoices.length ? '<optgroup label="Natural voices on this PC">' + naturalVoices.map(v => '<option value="__np:' + esc(v.id) + '"' + (voiceCfg.engine === 'own' && voiceCfg.ttsVoice === v.id ? ' selected' : '') + '>' + esc(v.name) + ' — ' + esc(v.about) + '</option>').join('') + '</optgroup>' : '';
   function voiceSelHtml() {
     if (!CAN_TALK()) return '';
     const mine = voiceLib.filter(v => v.voiceId);
     if (HAS_TTS() || (mine.length && voiceCfg.engine === 'own')) {
       const cur = voiceCfg.ttsVoiceName || '';
-      return '<span class="tr-voice">🎙 Voice: <select data-sel="coachVoice"><optgroup label="Your recorded voices">' + mine.map(v => '<option value="' + esc(v.name) + '"' + (v.name === cur ? ' selected' : '') + '>' + esc(v.name) + '</option>').join('') + '</optgroup>'
+      return '<span class="tr-voice">🎙 Voice: <select data-sel="coachVoice">' + naturalGroup() + '<optgroup label="Your recorded voices">' + mine.map(v => '<option value="' + esc(v.name) + '"' + (v.name === cur ? ' selected' : '') + '>' + esc(v.name) + '</option>').join('') + '</optgroup>'
         + (voiceCfg.engine === 'eleven' && cur && !mine.some(v => v.name === cur) ? '<option value="' + esc(cur) + '" selected>' + esc(cur) + '</option>' : '')
         + (localVoices().some(v => /^en/i.test(v.lang)) ? '<optgroup label="This PC’s built-in voices">' + localVoices().filter(v => /^en/i.test(v.lang)).map(v => '<option value="__pc:' + esc(v.name) + '">' + esc(v.name.replace(/^Microsoft /, '')) + '</option>').join('') + '</optgroup>' : '<option value="__pc">this PC’s built-in voice</option>')
         + '</select><button class="ghost tr-mini" data-act="ui:voicetry">🔈 Try</button></span>';
@@ -2814,7 +2827,7 @@ const Trainer = (() => {
     const pcVoices = (!HAS_LIB && opts.pcVoiceEnabled && pcLinked() && sendTo.voices) ? sendTo.voices : [];
     const phoneNote = !HAS_LIB && ON_PHONE ? '<span class="tr-dim">' + (vs.length ? '' : 'The phone hasn’t listed its voices yet — tap 🔈 Try. ') + 'No sound? Turn the volume up and flick the ring/silent switch on the side of the phone: the phone’s voice follows it.</span>' : '';
     const pcGroup = pcVoices.length ? '<optgroup label="' + (pcLinked() ? 'On your PC (linked)' : 'On your PC (not linked now)') + '">' + pcVoices.map(n => '<option value="__pcv:' + esc(n) + '"' + (opts.pcVoice === n ? ' selected' : '') + '>' + esc(n) + '</option>').join('') + '</optgroup>' : '';
-    return '<span class="tr-voice">🔈 Voice: <select data-sel="voice">' + pcGroup + (mine.length ? '<optgroup label="Your recorded voices">' + mine.map(v => '<option value="__own:' + esc(v.name) + '">' + esc(v.name) + '</option>').join('') + '</optgroup><optgroup label="This PC’s built-in voices">' : '') + en.map(opt).join('') + (mine.length ? '</optgroup>' : '') + (rest.length ? '<optgroup label="Other languages">' + rest.map(opt).join('') + '</optgroup>' : '') + '</select>'
+    return '<span class="tr-voice">🔈 Voice: <select data-sel="voice">' + pcGroup + naturalGroup() + (mine.length ? '<optgroup label="Your recorded voices">' + mine.map(v => '<option value="__own:' + esc(v.name) + '">' + esc(v.name) + '</option>').join('') + '</optgroup><optgroup label="This PC’s built-in voices">' : '') + en.map(opt).join('') + (mine.length ? '</optgroup>' : '') + (rest.length ? '<optgroup label="Other languages">' + rest.map(opt).join('') + '</optgroup>' : '') + '</select>'
       + '<select data-sel="speakRate" title="Reading speed">' + [[0.8, 'slower'], [0.9, 'a little slower'], [1, 'normal speed'], [1.1, 'a little faster'], [1.25, 'faster']].map(([r, n]) => '<option value="' + r + '"' + ((opts.speakRate || 1) === r ? ' selected' : '') + '>' + n + '</option>').join('') + '</select>'
       + '<button class="ghost tr-mini" data-act="ui:voicetry">🔈 Try</button>' + phoneNote
       + (window.api && window.api.ttsSpeak ? '<span class="tr-dim">Want a natural voice, or a family member’s own? ⚙ Settings → Voice.</span>' : '') + '</span>';
@@ -3066,6 +3079,7 @@ const Trainer = (() => {
   function usePcVoice(name) { if (!sendTo || !sendTo.conn || !sendTo.conn.open) return; const useEl = $('trVoiceUse'); try { sendTo.conn.send({ t: 'use', name, use: useEl ? useEl.value : 'coach' }); sendTo.status = 'Telling the PC…'; renderMain(); } catch (e) {} }
   const PUBLIC_URL = 'frankthedog.github.io/poker-angel';
   const libVoiceId = name => { const v = voiceLib.find(x => x.name === name); return v && v.voiceId || ''; };
+  function pickNatural(id) { const nv = naturalVoices.find(x => x.id === id); if (!nv || !window.api || !window.api.setTts) return; window.api.setTts({ engine: 'own', voice: nv.id, voiceName: nv.name }).then(() => { voiceChanged(); setTimeout(() => speak(VOICE_SAMPLE), 400); }); }
   function voiceRecHtml() {
     if (!CAN_RECORD) return '';
     const fmtWhen = w => new Date(w).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
@@ -4161,9 +4175,16 @@ const Trainer = (() => {
   // ---- 🌙 sleep story ----
   // The one sleep story in the app: the twelve written stories, read by the voice (sleepStory above).
   // Offered under 🃏 Play and at the top of 📖 Learn, the same buttons in both places.
+  // Who reads the story: a natural voice on this PC (Piper) when installed — soft, steady, no gaps — or the usual voice.
+  function storyVoiceHtml() {
+    if (naturalVoices.length) { const cur = storyVoiceId(); return '<div class="tr-row"><label class="tr-dim">Read by: <select data-sel="storyVoice" style="width:auto">' + naturalVoices.map(v => '<option value="' + esc(v.id) + '"' + (v.id === cur ? ' selected' : '') + '>' + esc(v.name) + ' — ' + esc(v.about) + '</option>').join('') + '<option value="usual"' + (cur ? '' : ' selected') + '>the usual voice</option></select></label></div>'; }
+    if (window.api && window.api.ownNaturalSetup) return '<div class="tr-row"><button class="ghost tr-mini" data-act="play:naturalsetup">🎧 Get a softer storyteller’s voice</button><span class="tr-dim">a one-off download of about 300 MB; natural, offline, free</span></div>';
+    return '';
+  }
   function sleepHtml() {
     return '<div class="tr-q tr-sleep" style="margin-top:8px">🌙 <b>Sleep story</b> — a bedtime story read slowly in a calm voice: one night in a card room somewhere in the world, one player, one habit of good poker woven through it, and a soft end. Twelve stories, told in turn; the table shows the hand in the story. Lights off, press one:'
         + '<div class="tr-row">' + [20, 30, 45, 60].map(m => '<button class="ghost" data-act="play:sleep" data-v="' + m + '">🌙 ' + m + ' minutes</button>').join('') + '</div>'
+        + storyVoiceHtml()
         + '<div class="tr-row"><label class="tr-dim">Tonight: <select data-sel="storyPick" style="width:auto"><option value=""' + (opts.storyPick ? '' : ' selected') + '>next in turn — ' + esc(storyNext().title) + ' · ' + esc(storyNext().place) + '</option>' + STORIES.map(t => '<option value="' + t.id + '"' + (opts.storyPick === t.id ? ' selected' : '') + '>' + esc(t.title) + ' · ' + esc(t.place) + '</option>').join('') + '</select></label></div></div>';
   }
   function renderLearn() {
@@ -4268,6 +4289,7 @@ const Trainer = (() => {
       if (v === 'hint') return hint();
       if (v === 'auto') return autoStart();
       if (v === 'sleep') return sleepStory(+b.dataset.v || 30, true);
+      if (v === 'naturalsetup') { window.api.ownNaturalSetup(); toast('A window opens and fetches the voices — when it says Done, come back here', 'green'); return; }
       if (v === 'autostop') return autoStop();
       if (v === 'talestop') return taleStop();
       if (v === 'autospeed') { opts.autoSpeed = b.dataset.v; saveOpts(); if (auto) auto.speed = opts.autoSpeed; renderPlay(); return; }
@@ -4391,16 +4413,19 @@ const Trainer = (() => {
       if (sel && sel.dataset.sel === 'voice') {
         if (/^__pcv:/.test(sel.value)) { opts.pcVoice = sel.value.slice(6); saveOpts(); if (pcLinked()) speak(VOICE_SAMPLE); else toast('Open Poker Angel on the PC and tap Connect under 🎙 Voices to use ' + opts.pcVoice, 'red'); return; }
         opts.pcVoice = ''; saveOpts();
+        if (/^__np:/.test(sel.value)) return pickNatural(sel.value.slice(5));
         if (/^__own:/.test(sel.value)) { const name = sel.value.slice(6), id = libVoiceId(name); if (id && window.api && window.api.setTts) { window.api.setTts({ engine: 'own', voice: id, voiceName: name }).then(() => { voiceChanged(); setTimeout(() => speak(VOICE_SAMPLE), 400); }); } return; }
         opts.voice = sel.value; saveOpts(); speak(VOICE_SAMPLE); return;
       }
       if (sel && sel.dataset.sel === 'coachVoice') {
+        if (/^__np:/.test(sel.value)) return pickNatural(sel.value.slice(5));
         if (/^__pc:/.test(sel.value)) { opts.voice = sel.value.slice(5); saveOpts(); window.api.setTts({ engine: 'local' }).then(() => { voiceChanged(); setTimeout(() => speak(VOICE_SAMPLE), 400); }); return; }
         if (sel.value === '__pc') { window.api.setTts({ engine: 'local' }).then(() => { voiceChanged(); setTimeout(() => speak(VOICE_SAMPLE), 400); }); return; }
         const id = libVoiceId(sel.value); if (id) window.api.setTts({ engine: voiceCfg.engine === 'local' ? 'own' : voiceCfg.engine, voice: id, voiceName: sel.value }).then(() => { voiceChanged(); setTimeout(() => speak(VOICE_SAMPLE), 400); });
         return;
       }
       if (sel && sel.dataset.sel === 'storyPick') { opts.storyPick = sel.value; saveOpts(); return; }
+      if (sel && sel.dataset.sel === 'storyVoice') { opts.storyVoice = sel.value; saveOpts(); if (!tale) { const nv = naturalVoices.find(x => x.id === sel.value); if (nv && window.api && window.api.ttsSpeak) { hush(); ttsSay(['Good evening. I will read tonight, slowly, for as long as you like.'], nv.id); } } return; }
       if (sel && sel.dataset.sel === 'speakRate') { opts.speakRate = parseFloat(sel.value) || 1; saveOpts(); speak(VOICE_SAMPLE); return; }
       if (sel && /^(chatterVol|chatterOften|roomVol)$/.test(sel.dataset.sel)) { opts[sel.dataset.sel] = sel.value; saveOpts(); roomSync(); chatterSchedule(); return; }
       if (sel && sel.dataset.sel === 'talk') { opts.talk = sel.value; opts.chatter = sel.value !== 'off'; saveOpts(); audioCtx(); chatterSchedule(); renderPlay(); return; }
